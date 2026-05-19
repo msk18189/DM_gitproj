@@ -1,0 +1,54 @@
+# Backend
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/.env
+backend/.env.example
+backend/pr_dashboard.db
+backend/ml/trained_models/
+backend/.pytest_cache/
+backend/dist/
+backend/build/
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.env.local
+frontend/.env.example
+frontend/.env.*.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Accidental scratch files
+backend/Untitled
+Untitled
+
+# Misc — never commit env files (use SETUP_TOKEN.md for required variables)
+.env
+.env.example
+.env.local
+.env.*.local
+**/.env
+**/.env.example
+
+__pycache__/
+*.pyc
