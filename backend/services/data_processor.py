@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from database.models import PullRequest, Repository, Contributor, MLPrediction
@@ -39,8 +39,12 @@ class DataProcessor:
                 self.ml_models = False  # Mark as failed
         return self.ml_models if self.ml_models else None
     
-    def process_repository(self, repo_url: str) -> Dict[str, Any]:
-        """Process GitHub repository and extract PR data"""
+    def process_repository(self, repo_url: str, github_token: Optional[str] = None) -> Dict[str, Any]:
+        """Process GitHub repository and extract PR data.
+
+        github_token: optional PAT from the user (for private repos or higher limits).
+        Falls back to GITHUB_TOKEN in environment when omitted.
+        """
         try:
             # Parse URL
             owner, repo_name = parse_github_repo_url(repo_url)
@@ -61,8 +65,8 @@ class DataProcessor:
             else:
                 print(f"[2/6] Using existing repository record: {repo.id}")
             
-            # Fetch PR data from GitHub
-            client = GitHubClient()
+            # Fetch PR data from GitHub (user token overrides env for this run)
+            client = GitHubClient(token=github_token.strip() if github_token else None)
             print(f"[3/6] Fetching PRs from GitHub...")
             raw_prs = client.fetch_pull_requests(owner, repo_name, first=50)
             print(f"[3/6] Fetched {len(raw_prs)} PRs from GitHub")

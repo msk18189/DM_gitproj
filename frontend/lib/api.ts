@@ -34,8 +34,11 @@ export function formatApiError(err: unknown): string {
   return err.message || 'Failed to analyze repository'
 }
 
-export const analyzeRepository = async (url: string) => {
-  const response = await api.post('/api/analyze', { url })
+export const analyzeRepository = async (url: string, githubToken?: string) => {
+  const response = await api.post('/api/analyze', {
+    url,
+    github_token: githubToken || null,
+  })
   return response.data
 }
 
@@ -113,15 +116,31 @@ export const getStaleAlerts = async (repoId: number) => {
   return response.data
 }
 
-export const compareRepositories = async (urlA: string, urlB: string) => {
-  const response = await api.post('/api/compare', { url_a: urlA, url_b: urlB })
+export const compareRepositories = async (
+  urlA: string,
+  urlB: string,
+  githubToken?: string
+) => {
+  const response = await api.post('/api/compare', {
+    url_a: urlA,
+    url_b: urlB,
+    github_token: githubToken || null,
+  })
   return response.data
 }
 
-export function getExportUrl(repoId: number, filters?: DashboardFiltersState): string {
+function exportQueryString(filters?: DashboardFiltersState): string {
   const params = new URLSearchParams()
   const fp = filterParams(filters)
   Object.entries(fp).forEach(([k, v]) => params.set(k, String(v)))
   const qs = params.toString()
-  return `${API_BASE}/api/export/${repoId}${qs ? `?${qs}` : ''}`
+  return qs ? `?${qs}` : ''
+}
+
+export function getExportCsvUrl(repoId: number, filters?: DashboardFiltersState): string {
+  return `${API_BASE}/api/export/${repoId}${exportQueryString(filters)}`
+}
+
+export function getExportPdfUrl(repoId: number, filters?: DashboardFiltersState): string {
+  return `${API_BASE}/api/export-pdf/${repoId}${exportQueryString(filters)}`
 }

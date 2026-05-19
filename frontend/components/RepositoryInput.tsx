@@ -2,20 +2,28 @@
 
 import { useState } from 'react'
 import { motion } from 'framer-motion'
-import { Github, Loader } from 'lucide-react'
+import { Github, Loader, KeyRound } from 'lucide-react'
 
 interface RepositoryInputProps {
-  onAnalyze: (url: string) => Promise<void>
+  githubToken: string
+  onGithubTokenChange: (value: string) => void
+  onAnalyze: (url: string, githubToken?: string) => Promise<void>
   isLoading: boolean
 }
 
-export default function RepositoryInput({ onAnalyze, isLoading }: RepositoryInputProps) {
+export default function RepositoryInput({
+  githubToken,
+  onGithubTokenChange,
+  onAnalyze,
+  isLoading,
+}: RepositoryInputProps) {
   const [url, setUrl] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (url.trim()) {
-      await onAnalyze(url)
+      const token = githubToken.trim()
+      await onAnalyze(url.trim(), token ? token : undefined)
     }
   }
 
@@ -44,7 +52,26 @@ export default function RepositoryInput({ onAnalyze, isLoading }: RepositoryInpu
             className="w-full px-4 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition"
             disabled={isLoading}
           />
-          <p className="text-xs text-gray-400 mt-1">GitHub token is configured in backend</p>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-2 flex items-center gap-2">
+            <KeyRound className="w-4 h-4 text-purple-400" />
+            GitHub token (optional)
+          </label>
+          <input
+            type="password"
+            autoComplete="off"
+            value={githubToken}
+            onChange={(e) => onGithubTokenChange(e.target.value)}
+            placeholder="ghp_… or github_pat_… for private repos & higher rate limits"
+            className="w-full px-4 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 transition font-mono text-sm"
+            disabled={isLoading}
+          />
+          <p className="text-xs text-gray-400 mt-1">
+            Leave empty to use the server&apos;s <code className="text-gray-500">GITHUB_TOKEN</code> from{' '}
+            <code className="text-gray-500">backend/.env</code>. Your token is only sent to your backend and is not stored by this app.
+          </p>
         </div>
 
         <button

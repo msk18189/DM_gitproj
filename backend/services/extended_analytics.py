@@ -20,6 +20,35 @@ from services.analytics import _month_range, _format_month_label, _week_range, _
 from services.risk_heuristics import scores_for_open_pr
 
 
+def _pdf_safe(text: Any) -> str:
+    """ASCII-safe text for core PDF fonts."""
+    if text is None:
+        return ""
+    s = str(text)
+    return s.encode("latin-1", errors="replace").decode("latin-1")
+
+
+def _pdf_paragraph(pdf, width: float, line_height: float, text: str) -> None:
+    """Write wrapped text that always continues from the left margin (fixes clipping / stray columns)."""
+    from fpdf.enums import XPos, YPos
+
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(
+        width,
+        line_height,
+        _pdf_safe(text),
+        new_x=XPos.LMARGIN,
+        new_y=YPos.NEXT,
+    )
+
+
+def _pdf_heading(pdf, title: str, size: int = 12) -> None:
+    pdf.ln(2)
+    pdf.set_font("Helvetica", "B", size)
+    _pdf_paragraph(pdf, pdf.epw, 7, title)
+    pdf.set_font("Helvetica", size=8)
+
+
 def _filters_from_params(
     days: Optional[int] = None,
     author: Optional[str] = None,
@@ -424,3 +453,176 @@ class ExtendedAnalytics:
             w.writerow([o["number"], o["title"], o["author"], o["age_days"], o["review_count"]])
 
         return buf.getvalue()
+
+    def build_export_pdf(
+        self,
+        repo_id: int,
+        days: Optional[int] = None,
+        author: Optional[str] = None,
+        state: Optional[str] = None,
+    ) -> bytes:
+        """Build PDF report (requires fpdf2). Includes full analysis sections."""
+        try:
+            from fpdf import FPDF
+        except ImportError as e:
+            raise ValueError(
+                "PDF export requires fpdf2. Install with: pip install fpdf2"
+            ) from e
+
+        repo = self.db.query(Repository).filter(Repository.id == repo_id).first()
+        if not repo:
+            raise ValueError("Repository not found")
+
+        kpi = self.get_kpi_with_duration(repo_id, days, author, state)
+        monthly = self.get_monthly_flow_filtered(
+            repo_id, months=6, days=days, author=author, state=state
+        )
+        throughput = self.get_throughput_filtered(
+            repo_id, weeks=8, days=days, author=author, state=state
+        )
+        contributors = self.get_contributors_filtered(
+            repo_id, limit=100, days=days, author=author, state=state
+        )
+        oldest = self.get_oldest_open_filtered(
+            repo_id, limit=50, days=days, author=author, state=state
+        )
+        slowest = self.get_slowest_merged_filtered(
+            repo_id, limit=30, days=days, author=author, state=state
+        )
+        stale = self.get_stale_recommendations(repo_id)
+        risks = self.get_pr_risk_panel(repo_id, limit=200)
+
+        total_prs = self.db.query(PullRequest).filter(
+            PullRequest.repo_id == repo_id
+        ).count()
+
+        pdf = FPDF()
+        pdf.set_margins(12, 12, 12)
+        pdf.set_auto_page_break(auto=True, margin=14)
+        pdf.add_page()
+        w = pdf.epw
+
+        pdf.set_font("Helvetica", "B", 15)
+        _pdf_paragraph(pdf, w, 8, "GitHub PR Intelligence Report")
+        pdf.set_font("Helvetica", size=10)
+        _pdf_paragraph(pdf, w, 5, f"Repository: {repo.owner}/{repo.name}")
+        _pdf_paragraph(pdf, w, 5, f"Generated (UTC): {datetime.now(timezone.utc).isoformat()}")
+        if days or (author and author != "all") or (state and state != "ALL"):
+            filt = f"Filters: days={days or 'all'} author={author or 'all'} state={state or 'ALL'}"
+            _pdf_paragraph(pdf, w, 5, filt)
+        _pdf_paragraph(pdf, w, 5, f"Total PRs in database for this repo: {total_prs}")
+
+        _pdf_heading(pdf, "KPI Summary", 11)
+        kpi_order = [
+            "open_prs",
+            "stale_prs",
+            "avg_cycle_time",
+            "median_cycle_time",
+            "avg_wait_for_review",
+            "avg_review_duration",
+            "merge_rate",
+            "avg_reviews_per_pr",
+        ]
+        shown: set[str] = set()
+        for key in kpi_order:
+            if key in kpi:
+                _pdf_paragraph(pdf, w, 4, f"{key}: {kpi[key]}")
+                shown.add(key)
+        for key, val in sorted(kpi.items()):
+            if key in shown or key.endswith("_display"):
+                continue
+            _pdf_paragraph(pdf, w, 4, f"{key}: {val}")
+            shown.add(key)
+        for key, val in kpi.items():
+            if key.endswith("_display") and isinstance(val, dict):
+                _pdf_paragraph(
+                    pdf,
+                    w,
+                    4,
+                    f"{key}: {val.get('value')} {val.get('unit', '')}",
+                )
+
+        _pdf_heading(pdf, "Monthly PR flow (last 6 months)", 11)
+        for row in monthly:
+            m = row.get("month", "")
+            _pdf_paragraph(
+                pdf,
+                w,
+                4,
+                f"{m} | created={row.get('created', 0)} merged={row.get('merged', 0)} closed={row.get('closed', 0)}",
+            )
+
+        _pdf_heading(pdf, "Weekly throughput (merged PRs)", 11)
+        for row in throughput:
+            _pdf_paragraph(
+                pdf,
+                w,
+                4,
+                f"{row.get('week', '')}: {row.get('prs', 0)} merged",
+            )
+
+        _pdf_heading(pdf, f"Contributors ({len(contributors)} listed)", 11)
+        for c in contributors:
+            _pdf_paragraph(
+                pdf,
+                w,
+                4,
+                f"{c.get('username', '')} | total={c.get('total_prs')} merged={c.get('merged_prs')} "
+                f"open={c.get('open_prs', 0)} merge%={c.get('merge_rate')} stale={c.get('stale_pr_count', 0)}",
+            )
+
+        _pdf_heading(pdf, f"Stale PR alerts ({len(stale)})", 11)
+        if not stale:
+            _pdf_paragraph(pdf, w, 4, "(none)")
+        for s in stale:
+            reasons = "; ".join(s.get("reasons", []) or [])
+            actions = "; ".join(s.get("recommended_actions", []) or [])
+            title = (s.get("title") or "")[:120]
+            _pdf_paragraph(
+                pdf,
+                w,
+                4,
+                f"#{s.get('number')} [{s.get('severity')}] age={s.get('age_days')}d | {title}",
+            )
+            _pdf_paragraph(pdf, w, 4, f"   Reasons: {reasons}")
+            _pdf_paragraph(pdf, w, 4, f"   Actions: {actions}")
+
+        _pdf_heading(pdf, f"PR risk & delay — open PRs ({len(risks)})", 11)
+        if not risks:
+            _pdf_paragraph(pdf, w, 4, "(no open PRs)")
+        for r in risks:
+            title = (r.get("title") or "")[:120]
+            delay = r.get("predicted_delay_days")
+            delay_s = f"{delay}d" if delay is not None else "n/a"
+            _pdf_paragraph(
+                pdf,
+                w,
+                4,
+                f"#{r.get('number')} risk={r.get('risk_score')}% bottleneck={r.get('bottleneck_probability')}% "
+                f"est_delay={delay_s} est_review_h={r.get('predicted_review_wait_hours')}",
+            )
+            _pdf_paragraph(pdf, w, 4, f"   {title} | author={r.get('author')}")
+
+        _pdf_heading(pdf, f"Oldest open PRs ({len(oldest)})", 11)
+        for o in oldest:
+            title = (o.get("title") or "")[:120]
+            _pdf_paragraph(
+                pdf,
+                w,
+                4,
+                f"#{o.get('number')} age={o.get('age_days')}d reviews={o.get('review_count')} | {title}",
+            )
+
+        _pdf_heading(pdf, f"Slowest merged PRs ({len(slowest)})", 11)
+        for s in slowest:
+            title = (s.get("title") or "")[:120]
+            ctd = s.get("cycle_time_days")
+            _pdf_paragraph(
+                pdf,
+                w,
+                4,
+                f"#{s.get('number')} cycle~{ctd}d | files={s.get('files_changed')} | {title}",
+            )
+
+        out = pdf.output()
+        return bytes(out) if isinstance(out, (bytes, bytearray)) else str(out).encode("latin-1")

@@ -41,6 +41,7 @@ const defaultFilters: DashboardFiltersState = {
 export default function Home() {
   const [repoId, setRepoId] = useState<number | null>(null)
   const [repoUrl, setRepoUrl] = useState('')
+  const [githubToken, setGithubToken] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [data, setData] = useState<any>(null)
@@ -96,13 +97,13 @@ export default function Home() {
     []
   )
 
-  const handleAnalyze = async (url: string) => {
+  const handleAnalyze = async (url: string, token?: string) => {
     setIsLoading(true)
     setError(null)
     setRepoUrl(url)
     setFilters(defaultFilters)
     try {
-      const result = await analyzeRepository(url)
+      const result = await analyzeRepository(url, token)
       setRepoId(result.repo_id)
       await loadDashboardData(result.repo_id, defaultFilters)
     } catch (err: unknown) {
@@ -155,7 +156,12 @@ export default function Home() {
       </motion.header>
 
       <main className="max-w-7xl mx-auto px-6 py-8">
-        <RepositoryInput onAnalyze={handleAnalyze} isLoading={isLoading} />
+        <RepositoryInput
+          githubToken={githubToken}
+          onGithubTokenChange={setGithubToken}
+          onAnalyze={handleAnalyze}
+          isLoading={isLoading}
+        />
 
         {error && (
           <motion.div
@@ -206,8 +212,6 @@ export default function Home() {
             <div className="mb-8">
               <ReviewTurnaroundChart data={data.reviewTurnaround} />
             </div>
-
-            <CompareRepos defaultUrl={repoUrl} />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
               <DataTable
@@ -284,6 +288,8 @@ export default function Home() {
               ]}
               data={data.contributors}
             />
+
+            <CompareRepos defaultUrl={repoUrl} githubToken={githubToken} />
           </>
         )}
       </main>

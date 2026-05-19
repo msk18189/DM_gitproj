@@ -14,10 +14,12 @@ router = APIRouter()
 
 class RepositoryRequest(BaseModel):
     url: str
+    github_token: Optional[str] = None
 
 class CompareRequest(BaseModel):
     url_a: str
     url_b: str
+    github_token: Optional[str] = None
 
 @router.post("/api/analyze")
 def analyze_repository(request: RepositoryRequest, db: Session = Depends(get_db)):
@@ -25,7 +27,8 @@ def analyze_repository(request: RepositoryRequest, db: Session = Depends(get_db)
     try:
         print(f"Analyzing repository: {request.url}")
         processor = DataProcessor(db)
-        result = processor.process_repository(request.url)
+        token = (request.github_token or "").strip() or None
+        result = processor.process_repository(request.url, github_token=token)
         print(f"Analysis result: {result}")
         if result.get("error"):
             raise HTTPException(status_code=400, detail=result["error"])
@@ -164,8 +167,9 @@ def compare_repositories(request: CompareRequest, db: Session = Depends(get_db))
     """Compare two repositories side by side"""
     try:
         processor = DataProcessor(db)
-        result_a = processor.process_repository(request.url_a)
-        result_b = processor.process_repository(request.url_b)
+        token = (request.github_token or "").strip() or None
+        result_a = processor.process_repository(request.url_a, github_token=token)
+        result_b = processor.process_repository(request.url_b, github_token=token)
         if result_a.get("error"):
             raise HTTPException(status_code=400, detail=f"Repo A: {result_a['error']}")
         if result_b.get("error"):
@@ -196,6 +200,28 @@ def export_report(
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/api/export-pdf/{repo_id}")
+def export_report_pdf(
+    repo_id: int,
+    days: Optional[int] = None,
+    author: Optional[str] = None,
+    state: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Export dashboard data as PDF"""
+    try:
+        ext = ExtendedAnalytics(db)
+        pdf_bytes = ext.build_export_pdf(repo_id, days, author, state)
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=pr_report_{repo_id}.pdf"},
+        )
+    except ValueError as e:
+        status = 404 if "not found" in str(e).lower() else 400
+        raise HTTPException(status_code=status, detail=str(e))
 
 @router.get("/api/features")
 def get_all_features():

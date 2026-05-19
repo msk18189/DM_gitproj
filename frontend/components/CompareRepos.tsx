@@ -1,28 +1,35 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { GitCompare, Loader } from 'lucide-react'
+import { GitCompare, Loader, KeyRound } from 'lucide-react'
 import { compareRepositories, formatApiError } from '@/lib/api'
 import { formatDurationDisplay } from '@/lib/format'
 
 interface CompareReposProps {
   defaultUrl?: string
+  githubToken?: string
 }
 
-export default function CompareRepos({ defaultUrl }: CompareReposProps) {
+export default function CompareRepos({ defaultUrl, githubToken = '' }: CompareReposProps) {
   const [urlA, setUrlA] = useState(defaultUrl || '')
   const [urlB, setUrlB] = useState('')
+  const [compareToken, setCompareToken] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<any>(null)
+
+  useEffect(() => {
+    if (defaultUrl) setUrlA(defaultUrl)
+  }, [defaultUrl])
 
   const handleCompare = async () => {
     if (!urlA.trim() || !urlB.trim()) return
     setLoading(true)
     setError(null)
     try {
-      const data = await compareRepositories(urlA.trim(), urlB.trim())
+      const token = compareToken.trim() || githubToken?.trim() || undefined
+      const data = await compareRepositories(urlA.trim(), urlB.trim(), token)
       setResult(data)
     } catch (err) {
       setError(formatApiError(err))
@@ -44,6 +51,9 @@ export default function CompareRepos({ defaultUrl }: CompareReposProps) {
         <GitCompare className="w-5 h-5 text-purple-400" />
         <h3 className="text-lg font-bold">Compare Repositories</h3>
       </div>
+      <p className="text-xs text-gray-400 mb-4">
+        For private repos, use the same token as in Analyze above, or paste a token below (only sent to your backend).
+      </p>
       <div className="grid md:grid-cols-2 gap-4 mb-4">
         <input
           type="text"
@@ -58,6 +68,19 @@ export default function CompareRepos({ defaultUrl }: CompareReposProps) {
           onChange={(e) => setUrlB(e.target.value)}
           placeholder="Repository B URL"
           className="px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm"
+        />
+      </div>
+      <div className="mb-4">
+        <label className="block text-xs text-gray-400 mb-1 flex items-center gap-1">
+          <KeyRound className="w-3 h-3" /> Token for compare (optional)
+        </label>
+        <input
+          type="password"
+          autoComplete="off"
+          value={compareToken}
+          onChange={(e) => setCompareToken(e.target.value)}
+          placeholder="Optional — overrides Analyze token if set"
+          className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm font-mono"
         />
       </div>
       <button

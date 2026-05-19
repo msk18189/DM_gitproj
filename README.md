@@ -93,7 +93,7 @@ cp .env.example .env
 
 5. Run backend:
 ```bash
-python main.py
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
 ```
 
 Backend will be available at `http://localhost:8000`
@@ -126,13 +126,14 @@ Frontend will be available at `http://localhost:3000`
 
 1. Open the dashboard at `http://localhost:3000`
 2. Enter a GitHub repository URL (e.g., `https://github.com/owner/repo`)
-3. Optionally provide a GitHub token for higher rate limits
+3. Optionally paste a **GitHub token** in the dashboard (for private repos and higher rate limits), or rely on `GITHUB_TOKEN` in `backend/.env`
 4. Click "Analyze Repository"
 5. View comprehensive analytics and metrics
 
 ## API Endpoints
 
-- `POST /api/analyze` - Analyze a repository
+- `POST /api/analyze` — body: `{ "url", "github_token"?: optional PAT for private repos }`
+- `GET /api/export/{repo_id}` — CSV report (query: `days`, `author`, `state`)
 - `GET /api/kpi/{repo_id}` - Get KPI summary
 - `GET /api/oldest-prs/{repo_id}` - Get oldest open PRs
 - `GET /api/slowest-prs/{repo_id}` - Get slowest merged PRs
