@@ -8,3 +8,5 @@ xgboost==2.0.3
 lightgbm==4.1.0
 pydantic==2.5.0
 fpdf2==2.8.2
+matplotlib==3.8.2
+Pillow==10.2.0
