@@ -6,7 +6,7 @@ import { ChevronRight } from 'lucide-react'
 interface Column {
   key: string
   label: string
-  render?: (value: any) => React.ReactNode
+  render?: (value: any, row?: any) => React.ReactNode
 }
 
 interface DataTableProps {
@@ -58,7 +58,7 @@ export default function DataTable({
                 >
                   {columns.map((col) => (
                     <td key={col.key} className="px-4 py-3 text-sm text-gray-300">
-                      {col.render ? col.render(row[col.key]) : row[col.key]}
+                      {col.render ? col.render(row[col.key], row) : row[col.key]}
                     </td>
                   ))}
                 </motion.tr>

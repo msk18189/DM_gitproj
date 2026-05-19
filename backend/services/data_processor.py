@@ -227,6 +227,15 @@ class DataProcessor:
                 bottleneck_prob = float(bottleneck_prob) if bottleneck_prob else 0.0
                 risk_score = float(risk_score) if risk_score else 0.0
                 predicted_review_wait = float(predicted_review_wait) if predicted_review_wait else 0.0
+
+                # Fallback to heuristics when ML models are not trained (.pkl missing)
+                if predicted_delay == 0 and bottleneck_prob == 0 and risk_score == 0:
+                    from services.risk_heuristics import compute_heuristic_scores
+                    h = compute_heuristic_scores(pr)
+                    predicted_delay = h["predicted_delay_days"]
+                    bottleneck_prob = h["bottleneck_probability"] / 100.0
+                    risk_score = h["risk_score"] / 100.0
+                    predicted_review_wait = h["predicted_review_wait_hours"]
                 
                 # Store predictions
                 prediction = MLPrediction(

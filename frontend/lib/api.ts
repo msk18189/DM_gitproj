@@ -1,4 +1,5 @@
 import axios, { isAxiosError } from 'axios'
+import type { DashboardFiltersState } from '@/components/DashboardFilters'
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -8,6 +9,15 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 })
+
+function filterParams(filters?: DashboardFiltersState) {
+  if (!filters) return {}
+  const params: Record<string, string | number> = {}
+  if (filters.days) params.days = filters.days
+  if (filters.author && filters.author !== 'all') params.author = filters.author
+  if (filters.state && filters.state !== 'ALL') params.state = filters.state
+  return params
+}
 
 export function formatApiError(err: unknown): string {
   if (!isAxiosError(err)) {
@@ -25,46 +35,93 @@ export function formatApiError(err: unknown): string {
 }
 
 export const analyzeRepository = async (url: string) => {
-  const response = await api.post('/api/analyze', {
-    url,
-  })
+  const response = await api.post('/api/analyze', { url })
   return response.data
 }
 
-export const getKPI = async (repoId: number) => {
-  const response = await api.get(`/api/kpi/${repoId}`)
+export const getKPI = async (repoId: number, filters?: DashboardFiltersState) => {
+  const response = await api.get(`/api/kpi/${repoId}`, { params: filterParams(filters) })
   return response.data
 }
 
-export const getOldestPRs = async (repoId: number, limit: number = 10) => {
+export const getOldestPRs = async (
+  repoId: number,
+  limit: number = 10,
+  filters?: DashboardFiltersState
+) => {
   const response = await api.get(`/api/oldest-prs/${repoId}`, {
-    params: { limit },
+    params: { limit, ...filterParams(filters) },
   })
   return response.data
 }
 
-export const getSlowestPRs = async (repoId: number, limit: number = 10) => {
+export const getSlowestPRs = async (
+  repoId: number,
+  limit: number = 10,
+  filters?: DashboardFiltersState
+) => {
   const response = await api.get(`/api/slowest-prs/${repoId}`, {
-    params: { limit },
+    params: { limit, ...filterParams(filters) },
   })
   return response.data
 }
 
-export const getContributorActivity = async (repoId: number) => {
-  const response = await api.get(`/api/contributor-activity/${repoId}`)
+export const getContributorActivity = async (
+  repoId: number,
+  filters?: DashboardFiltersState
+) => {
+  const response = await api.get(`/api/contributor-activity/${repoId}`, {
+    params: filterParams(filters),
+  })
   return response.data
 }
 
-export const getMonthlyFlow = async (repoId: number, months: number = 6) => {
+export const getMonthlyFlow = async (
+  repoId: number,
+  months: number = 6,
+  filters?: DashboardFiltersState
+) => {
   const response = await api.get(`/api/monthly-flow/${repoId}`, {
-    params: { months },
+    params: { months, ...filterParams(filters) },
   })
   return response.data
 }
 
-export const getThroughput = async (repoId: number, weeks: number = 8) => {
+export const getThroughput = async (
+  repoId: number,
+  weeks: number = 8,
+  filters?: DashboardFiltersState
+) => {
   const response = await api.get(`/api/throughput/${repoId}`, {
-    params: { weeks },
+    params: { weeks, ...filterParams(filters) },
   })
   return response.data
+}
+
+export const getAuthors = async (repoId: number) => {
+  const response = await api.get(`/api/authors/${repoId}`)
+  return response.data.authors as string[]
+}
+
+export const getPRRisk = async (repoId: number) => {
+  const response = await api.get(`/api/pr-risk/${repoId}`)
+  return response.data
+}
+
+export const getStaleAlerts = async (repoId: number) => {
+  const response = await api.get(`/api/stale-alerts/${repoId}`)
+  return response.data
+}
+
+export const compareRepositories = async (urlA: string, urlB: string) => {
+  const response = await api.post('/api/compare', { url_a: urlA, url_b: urlB })
+  return response.data
+}
+
+export function getExportUrl(repoId: number, filters?: DashboardFiltersState): string {
+  const params = new URLSearchParams()
+  const fp = filterParams(filters)
+  Object.entries(fp).forEach(([k, v]) => params.set(k, String(v)))
+  const qs = params.toString()
+  return `${API_BASE}/api/export/${repoId}${qs ? `?${qs}` : ''}`
 }

@@ -149,10 +149,10 @@ class GitHubClient:
             if closed_at:
                 closed_at = datetime.fromisoformat(closed_at.replace("Z", "+00:00"))
             
-            # Calculate cycle time
+            # Calculate cycle time (fractional days for sub-day merges)
             cycle_time_days = None
             if merged_at:
-                cycle_time_days = (merged_at - created_at).days
+                cycle_time_days = (merged_at - created_at).total_seconds() / 86400
             
             # Calculate review metrics - handle None reviews
             reviews_data = pr.get("reviews")

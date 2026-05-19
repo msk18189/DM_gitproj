@@ -1,15 +1,23 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from database.db import get_db
 from services.data_processor import DataProcessor
 from services.analytics import AnalyticsService
+from services.extended_analytics import ExtendedAnalytics
 from pydantic import BaseModel
 from datetime import datetime, timezone
+from typing import Optional
+import io
 
 router = APIRouter()
 
 class RepositoryRequest(BaseModel):
     url: str
+
+class CompareRequest(BaseModel):
+    url_a: str
+    url_b: str
 
 @router.post("/api/analyze")
 def analyze_repository(request: RepositoryRequest, db: Session = Depends(get_db)):
@@ -60,40 +68,134 @@ def analyze_repository(request: RepositoryRequest, db: Session = Depends(get_db)
             raise HTTPException(status_code=400, detail=error_msg)
 
 @router.get("/api/kpi/{repo_id}")
-def get_kpi(repo_id: int, db: Session = Depends(get_db)):
+def get_kpi(
+    repo_id: int,
+    days: Optional[int] = None,
+    author: Optional[str] = None,
+    state: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """Get KPI summary for a repository"""
-    analytics = AnalyticsService(db)
-    return analytics.get_kpi_summary(repo_id)
+    ext = ExtendedAnalytics(db)
+    return ext.get_kpi_with_duration(repo_id, days, author, state)
 
 @router.get("/api/oldest-prs/{repo_id}")
-def get_oldest_prs(repo_id: int, limit: int = 10, db: Session = Depends(get_db)):
+def get_oldest_prs(
+    repo_id: int,
+    limit: int = 10,
+    days: Optional[int] = None,
+    author: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """Get oldest open PRs"""
-    analytics = AnalyticsService(db)
-    return analytics.get_oldest_open_prs(repo_id, limit)
+    ext = ExtendedAnalytics(db)
+    return ext.get_oldest_open_filtered(repo_id, limit, days=days, author=author)
 
 @router.get("/api/slowest-prs/{repo_id}")
-def get_slowest_prs(repo_id: int, limit: int = 10, db: Session = Depends(get_db)):
+def get_slowest_prs(
+    repo_id: int,
+    limit: int = 10,
+    days: Optional[int] = None,
+    author: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """Get slowest merged PRs"""
-    analytics = AnalyticsService(db)
-    return analytics.get_slowest_merged_prs(repo_id, limit)
+    ext = ExtendedAnalytics(db)
+    return ext.get_slowest_merged_filtered(repo_id, limit, days=days, author=author)
 
 @router.get("/api/contributor-activity/{repo_id}")
-def get_contributor_activity(repo_id: int, db: Session = Depends(get_db)):
+def get_contributor_activity(
+    repo_id: int,
+    days: Optional[int] = None,
+    author: Optional[str] = None,
+    state: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """Get contributor activity"""
-    analytics = AnalyticsService(db)
-    return analytics.get_contributor_activity(repo_id)
+    ext = ExtendedAnalytics(db)
+    return ext.get_contributors_filtered(repo_id, days=days, author=author, state=state)
 
 @router.get("/api/monthly-flow/{repo_id}")
-def get_monthly_flow(repo_id: int, months: int = 6, db: Session = Depends(get_db)):
+def get_monthly_flow(
+    repo_id: int,
+    months: int = 6,
+    days: Optional[int] = None,
+    author: Optional[str] = None,
+    state: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """Get monthly PR flow"""
-    analytics = AnalyticsService(db)
-    return analytics.get_monthly_pr_flow(repo_id, months)
+    ext = ExtendedAnalytics(db)
+    return ext.get_monthly_flow_filtered(repo_id, months, days=days, author=author, state=state)
 
 @router.get("/api/throughput/{repo_id}")
-def get_throughput(repo_id: int, weeks: int = 8, db: Session = Depends(get_db)):
+def get_throughput(
+    repo_id: int,
+    weeks: int = 8,
+    days: Optional[int] = None,
+    author: Optional[str] = None,
+    state: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """Get PR throughput"""
-    analytics = AnalyticsService(db)
-    return analytics.get_pr_throughput(repo_id, weeks)
+    ext = ExtendedAnalytics(db)
+    return ext.get_throughput_filtered(repo_id, weeks, days=days, author=author, state=state)
+
+@router.get("/api/authors/{repo_id}")
+def get_authors(repo_id: int, db: Session = Depends(get_db)):
+    """List PR authors for filter dropdown"""
+    ext = ExtendedAnalytics(db)
+    return {"authors": ext.get_authors(repo_id)}
+
+@router.get("/api/pr-risk/{repo_id}")
+def get_pr_risk(repo_id: int, limit: int = 15, db: Session = Depends(get_db)):
+    """ML risk & delay predictions for open PRs"""
+    ext = ExtendedAnalytics(db)
+    return ext.get_pr_risk_panel(repo_id, limit)
+
+@router.get("/api/stale-alerts/{repo_id}")
+def get_stale_alerts(repo_id: int, db: Session = Depends(get_db)):
+    """Stale PR alerts with recommendations"""
+    ext = ExtendedAnalytics(db)
+    return ext.get_stale_recommendations(repo_id)
+
+@router.post("/api/compare")
+def compare_repositories(request: CompareRequest, db: Session = Depends(get_db)):
+    """Compare two repositories side by side"""
+    try:
+        processor = DataProcessor(db)
+        result_a = processor.process_repository(request.url_a)
+        result_b = processor.process_repository(request.url_b)
+        if result_a.get("error"):
+            raise HTTPException(status_code=400, detail=f"Repo A: {result_a['error']}")
+        if result_b.get("error"):
+            raise HTTPException(status_code=400, detail=f"Repo B: {result_b['error']}")
+        ext = ExtendedAnalytics(db)
+        return ext.compare_repos(result_a["repo_id"], result_b["repo_id"])
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/api/export/{repo_id}")
+def export_report(
+    repo_id: int,
+    days: Optional[int] = None,
+    author: Optional[str] = None,
+    state: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Export dashboard data as CSV"""
+    try:
+        ext = ExtendedAnalytics(db)
+        csv_content = ext.build_export_csv(repo_id, days, author, state)
+        return StreamingResponse(
+            io.StringIO(csv_content),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=pr_report_{repo_id}.csv"},
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 @router.get("/api/features")
 def get_all_features():
