@@ -199,6 +199,15 @@ export function ContributorChart({ data }: { data: any[] }) {
 }
 
 export function ReviewTurnaroundChart({ data }: { data: any[] }) {
+  if (!data?.length) {
+    return (
+      <EmptyChart
+        title="Review Turnaround - Avg Wait for First Review"
+        message="No contributor data yet. Re-analyze the repository to refresh."
+      />
+    )
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0 }}

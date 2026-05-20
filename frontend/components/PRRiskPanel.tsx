@@ -73,7 +73,13 @@ export default function PRRiskPanel({ data }: { data: PRRiskItem[] }) {
                     : '—'}
                 </td>
                 <td className="px-3 py-2 text-sm">
-                  {pr.predicted_review_wait_hours != null
+                  {pr.review_count === 0
+                    ? pr.predicted_review_wait_hours != null
+                      ? `No reviews yet (${pr.predicted_review_wait_hours}h open)`
+                      : 'No reviews yet'
+                    : pr.predicted_review_wait_display
+                    ? `${pr.predicted_review_wait_display.value} ${pr.predicted_review_wait_display.unit}`
+                    : pr.predicted_review_wait_hours != null
                     ? `${pr.predicted_review_wait_hours} hrs`
                     : '—'}
                 </td>

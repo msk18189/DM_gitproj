@@ -6,23 +6,23 @@ export interface DurationDisplay {
 
 export function formatDurationDisplay(
   display?: DurationDisplay | null,
-  fallbackDays?: number
+  fallbackDays?: number | null
 ): { value: string | number; unit: string } {
   if (display && display.value > 0) {
     return { value: display.value, unit: display.unit }
   }
-  if (fallbackDays !== undefined && fallbackDays > 0) {
+  if (fallbackDays !== undefined && fallbackDays !== null && fallbackDays > 0) {
     if (fallbackDays < 1) {
       const hrs = Math.round(fallbackDays * 24 * 10) / 10
       return { value: hrs === Math.floor(hrs) ? Math.floor(hrs) : hrs, unit: 'hrs' }
     }
     return { value: fallbackDays, unit: 'days' }
   }
-  return { value: 0, unit: 'hrs' }
+  return { value: '-', unit: '' }
 }
 
-export function formatDurationFromDays(days: number): { value: string | number; unit: string } {
-  if (days <= 0) return { value: 0, unit: 'hrs' }
+export function formatDurationFromDays(days: number | null | undefined): { value: string | number; unit: string } {
+  if (days == null || days <= 0) return { value: '-', unit: '' }
   if (days < 1) {
     const hrs = Math.round(days * 24 * 10) / 10
     return { value: hrs === Math.floor(hrs) ? Math.floor(hrs) : hrs, unit: 'hrs' }

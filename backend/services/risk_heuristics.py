@@ -1,9 +1,13 @@
-"""Rule-based risk scores when ML models are not trained yet."""
+"""Rule-based risk and delay signals used as fallbacks and baselines for statistical analytics."""
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+from sqlalchemy.orm import Session
 
 from database.models import PullRequest
 from services.filters import ensure_utc, format_duration
+from utils.logging_config import get_logger
+
+logger = get_logger("risk_heuristics")
 
 
 def compute_heuristic_scores(pr: PullRequest, now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -72,34 +76,45 @@ def compute_heuristic_scores(pr: PullRequest, now: Optional[datetime] = None) ->
 
 
 def ml_scores_valid(pred) -> bool:
-    """True if stored ML prediction has any non-zero signal."""
+    """True if stored prediction row has usable numeric values."""
     if not pred:
         return False
     return bool(
-        (pred.risk_score and pred.risk_score > 0.01)
-        or (pred.bottleneck_probability and pred.bottleneck_probability > 0.01)
-        or (pred.predicted_delay_days and pred.predicted_delay_days > 0.01)
-        or (pred.predicted_review_wait and pred.predicted_review_wait > 0.01)
+        pred.risk_score is not None
+        and pred.bottleneck_probability is not None
+        and (pred.risk_score > 0 or pred.bottleneck_probability > 0)
     )
 
 
-def scores_for_open_pr(pr: PullRequest, pred, now: Optional[datetime] = None) -> Dict[str, Any]:
-    """Prefer ML scores when trained; otherwise use heuristics."""
+def scores_for_open_pr(pr: PullRequest, pred, now: Optional[datetime] = None, db: Optional[Session] = None) -> Dict[str, Any]:
+    """
+    Live statistical scores for an open PR (recomputed each request).
+
+    Uses repo-relative statistical heuristics only — no persisted serialized estimators.
+    """
     now = now or ensure_utc(datetime.utcnow())
 
+    if db is not None:
+        try:
+            from services.pr_analytics_v2 import compute_heuristic_scores_v2
+            scores = compute_heuristic_scores_v2(pr, db, now)
+
+            return scores
+        except Exception as e:
+            logger.warning(
+                "Statistical analytics failed for PR %s: %s", pr.pr_number, e
+            )
+
     if ml_scores_valid(pred):
-        risk_pct = round((pred.risk_score or 0) * 100, 1)
-        bottleneck_pct = round((pred.bottleneck_probability or 0) * 100, 1)
-        delay_days = pred.predicted_delay_days or 0
         return {
-            "risk_score": risk_pct,
-            "bottleneck_probability": bottleneck_pct,
-            "predicted_delay_days": round(delay_days, 1) if delay_days else None,
-            "predicted_delay_display": format_duration((delay_days or 0) * 24),
+            "risk_score": round((pred.risk_score or 0) * 100, 1),
+            "bottleneck_probability": round((pred.bottleneck_probability or 0) * 100, 1),
+            "predicted_delay_days": round(pred.predicted_delay_days or 0, 2),
+            "predicted_delay_display": format_duration((pred.predicted_delay_days or 0) * 24),
             "predicted_review_wait_hours": round(pred.predicted_review_wait, 1)
-            if pred.predicted_review_wait
+            if pred.predicted_review_wait is not None
             else None,
-            "source": "ml",
+            "source": "stored",
         }
 
     return compute_heuristic_scores(pr, now)

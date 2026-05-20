@@ -20,35 +20,6 @@ from services.analytics import _month_range, _format_month_label, _week_range, _
 from services.risk_heuristics import scores_for_open_pr
 
 
-def _pdf_safe(text: Any) -> str:
-    """ASCII-safe text for core PDF fonts."""
-    if text is None:
-        return ""
-    s = str(text)
-    return s.encode("latin-1", errors="replace").decode("latin-1")
-
-
-def _pdf_paragraph(pdf, width: float, line_height: float, text: str) -> None:
-    """Write wrapped text that always continues from the left margin (fixes clipping / stray columns)."""
-    from fpdf.enums import XPos, YPos
-
-    pdf.set_x(pdf.l_margin)
-    pdf.multi_cell(
-        width,
-        line_height,
-        _pdf_safe(text),
-        new_x=XPos.LMARGIN,
-        new_y=YPos.NEXT,
-    )
-
-
-def _pdf_heading(pdf, title: str, size: int = 12) -> None:
-    pdf.ln(2)
-    pdf.set_font("Helvetica", "B", size)
-    _pdf_paragraph(pdf, pdf.epw, 7, title)
-    pdf.set_font("Helvetica", size=8)
-
-
 def _filters_from_params(
     days: Optional[int] = None,
     author: Optional[str] = None,
@@ -144,7 +115,7 @@ class ExtendedAnalytics:
                 m = _month_key(pr.merged_at)
                 if m in flow:
                     flow[m]["merged"] += 1
-            if pr.state == "CLOSED" and pr.closed_at:
+            if pr.state == "CLOSED" and pr.closed_at and not pr.merged_at:
                 m = _month_key(pr.closed_at)
                 if m in flow:
                     flow[m]["closed"] += 1
@@ -271,7 +242,7 @@ class ExtendedAnalytics:
         )
         now = ensure_utc(datetime.utcnow())
         results = []
-        uses_heuristic = False
+        
         for pr in open_prs:
             pred = (
                 self.db.query(MLPrediction)
@@ -279,9 +250,9 @@ class ExtendedAnalytics:
                 .order_by(MLPrediction.created_at.desc())
                 .first()
             )
-            scores = scores_for_open_pr(pr, pred, now)
-            if scores.get("source") == "heuristic":
-                uses_heuristic = True
+            # Pass db session to enable V2 heuristics
+            scores = scores_for_open_pr(pr, pred, now, self.db)
+            
             results.append({
                 "number": pr.pr_number,
                 "title": pr.title,
@@ -290,20 +261,29 @@ class ExtendedAnalytics:
                 "files_changed": pr.files_changed or 0,
                 "predicted_delay_days": scores.get("predicted_delay_days"),
                 "predicted_delay_display": scores.get("predicted_delay_display"),
+                "predicted_review_wait_hours": scores.get("predicted_review_wait_hours"),
+                "predicted_review_wait_display": scores.get("predicted_review_wait_display"),
                 "bottleneck_probability": scores.get("bottleneck_probability", 0),
                 "risk_score": scores.get("risk_score", 0),
-                "predicted_review_wait_hours": scores.get("predicted_review_wait_hours"),
-                "score_source": scores.get("source", "heuristic"),
+                "merge_complexity": scores.get("merge_complexity"),
+                "stale_probability": scores.get("stale_probability"),
+                "score_source": scores.get("source", "unknown"),
             })
+        
+        # Sort by risk score
         results.sort(key=lambda x: x["risk_score"], reverse=True)
-        if results and uses_heuristic:
+        
+        if results and results[0].get("score_source", "").startswith("statistical"):
             results[0]["_panel_note"] = (
-                "Scores are rule-based estimates (ML models not trained yet). "
-                "Re-analyze after training models for ML predictions."
+                "Continuous statistical scores from PR timestamps, size, reviews, "
+                "and contributor load (recomputed per request)."
             )
+            
         return results[:limit]
 
     def get_stale_recommendations(self, repo_id: int, stale_days: int = 30) -> List[Dict[str, Any]]:
+        from services.pr_analytics_v2 import build_dynamic_stale_reasons
+
         now = ensure_utc(datetime.utcnow())
         open_prs = (
             self.db.query(PullRequest)
@@ -314,35 +294,12 @@ class ExtendedAnalytics:
         for pr in open_prs:
             if not pr.created_at:
                 continue
-            age_days = (now - ensure_utc(pr.created_at)).days
-            reasons: List[str] = []
-            actions: List[str] = []
-            severity = "low"
-
-            if age_days >= stale_days:
-                reasons.append(f"Open for {age_days} days (stale threshold: {stale_days}d)")
-                actions.append("Prioritize review or close if no longer needed")
-                severity = "high"
-            elif age_days >= 14:
-                reasons.append(f"Open for {age_days} days")
-                actions.append("Schedule review this week")
-                severity = "medium"
-
-            if (pr.review_count or 0) == 0:
-                reasons.append("No reviews yet")
-                actions.append("Assign a reviewer")
-                severity = "high" if severity != "high" else severity
-
-            if (pr.files_changed or 0) > 20:
-                reasons.append(f"Large change set ({pr.files_changed} files)")
-                actions.append("Split into smaller PRs for faster review")
-                if severity == "low":
-                    severity = "medium"
-
-            if (pr.comment_count or 0) > 10 and (pr.review_count or 0) < 2:
-                reasons.append("High discussion but few formal reviews")
-                actions.append("Request explicit approval from maintainers")
-
+            age_days = round(
+                (now - ensure_utc(pr.created_at)).total_seconds() / 86400, 1
+            )
+            reasons, actions, severity = build_dynamic_stale_reasons(
+                pr, now, stale_days
+            )
             if not reasons:
                 continue
 
@@ -461,9 +418,14 @@ class ExtendedAnalytics:
         author: Optional[str] = None,
         state: Optional[str] = None,
     ) -> bytes:
-        """Build PDF report (requires fpdf2). Includes full analysis sections."""
+        """Build structured engineering intelligence PDF (requires fpdf2)."""
         try:
-            from fpdf import FPDF
+            from services.pdf_report import (
+                ReportContext,
+                build_engineering_report_pdf,
+                _compute_health_insights,
+                _compute_workflow_insights,
+            )
         except ImportError as e:
             raise ValueError(
                 "PDF export requires fpdf2. Install with: pip install fpdf2"
@@ -473,6 +435,7 @@ class ExtendedAnalytics:
         if not repo:
             raise ValueError("Repository not found")
 
+        filters = _filters_from_params(days, author, state)
         kpi = self.get_kpi_with_duration(repo_id, days, author, state)
         monthly = self.get_monthly_flow_filtered(
             repo_id, months=6, days=days, author=author, state=state
@@ -480,149 +443,38 @@ class ExtendedAnalytics:
         throughput = self.get_throughput_filtered(
             repo_id, weeks=8, days=days, author=author, state=state
         )
-        contributors = self.get_contributors_filtered(
-            repo_id, limit=100, days=days, author=author, state=state
-        )
-        oldest = self.get_oldest_open_filtered(
-            repo_id, limit=50, days=days, author=author, state=state
-        )
-        slowest = self.get_slowest_merged_filtered(
-            repo_id, limit=30, days=days, author=author, state=state
+        all_contributors = self.get_contributors_filtered(
+            repo_id, limit=500, days=days, author=author, state=state
         )
         stale = self.get_stale_recommendations(repo_id)
-        risks = self.get_pr_risk_panel(repo_id, limit=200)
+        all_risks = self.get_pr_risk_panel(repo_id, limit=500)
+        prs = get_filtered_prs(self.db, repo_id, filters)
 
         total_prs = self.db.query(PullRequest).filter(
             PullRequest.repo_id == repo_id
         ).count()
 
-        pdf = FPDF()
-        pdf.set_margins(12, 12, 12)
-        pdf.set_auto_page_break(auto=True, margin=14)
-        pdf.add_page()
-        w = pdf.epw
-
-        pdf.set_font("Helvetica", "B", 15)
-        _pdf_paragraph(pdf, w, 8, "GitHub PR Intelligence Report")
-        pdf.set_font("Helvetica", size=10)
-        _pdf_paragraph(pdf, w, 5, f"Repository: {repo.owner}/{repo.name}")
-        _pdf_paragraph(pdf, w, 5, f"Generated (UTC): {datetime.now(timezone.utc).isoformat()}")
+        generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        filters_label = None
         if days or (author and author != "all") or (state and state != "ALL"):
-            filt = f"Filters: days={days or 'all'} author={author or 'all'} state={state or 'ALL'}"
-            _pdf_paragraph(pdf, w, 5, filt)
-        _pdf_paragraph(pdf, w, 5, f"Total PRs in database for this repo: {total_prs}")
-
-        _pdf_heading(pdf, "KPI Summary", 11)
-        kpi_order = [
-            "open_prs",
-            "stale_prs",
-            "avg_cycle_time",
-            "median_cycle_time",
-            "avg_wait_for_review",
-            "avg_review_duration",
-            "merge_rate",
-            "avg_reviews_per_pr",
-        ]
-        shown: set[str] = set()
-        for key in kpi_order:
-            if key in kpi:
-                _pdf_paragraph(pdf, w, 4, f"{key}: {kpi[key]}")
-                shown.add(key)
-        for key, val in sorted(kpi.items()):
-            if key in shown or key.endswith("_display"):
-                continue
-            _pdf_paragraph(pdf, w, 4, f"{key}: {val}")
-            shown.add(key)
-        for key, val in kpi.items():
-            if key.endswith("_display") and isinstance(val, dict):
-                _pdf_paragraph(
-                    pdf,
-                    w,
-                    4,
-                    f"{key}: {val.get('value')} {val.get('unit', '')}",
-                )
-
-        _pdf_heading(pdf, "Monthly PR flow (last 6 months)", 11)
-        for row in monthly:
-            m = row.get("month", "")
-            _pdf_paragraph(
-                pdf,
-                w,
-                4,
-                f"{m} | created={row.get('created', 0)} merged={row.get('merged', 0)} closed={row.get('closed', 0)}",
+            filters_label = (
+                f"days={days or 'all'} | author={author or 'all'} | state={state or 'ALL'}"
             )
 
-        _pdf_heading(pdf, "Weekly throughput (merged PRs)", 11)
-        for row in throughput:
-            _pdf_paragraph(
-                pdf,
-                w,
-                4,
-                f"{row.get('week', '')}: {row.get('prs', 0)} merged",
-            )
-
-        _pdf_heading(pdf, f"Contributors ({len(contributors)} listed)", 11)
-        for c in contributors:
-            _pdf_paragraph(
-                pdf,
-                w,
-                4,
-                f"{c.get('username', '')} | total={c.get('total_prs')} merged={c.get('merged_prs')} "
-                f"open={c.get('open_prs', 0)} merge%={c.get('merge_rate')} stale={c.get('stale_pr_count', 0)}",
-            )
-
-        _pdf_heading(pdf, f"Stale PR alerts ({len(stale)})", 11)
-        if not stale:
-            _pdf_paragraph(pdf, w, 4, "(none)")
-        for s in stale:
-            reasons = "; ".join(s.get("reasons", []) or [])
-            actions = "; ".join(s.get("recommended_actions", []) or [])
-            title = (s.get("title") or "")[:120]
-            _pdf_paragraph(
-                pdf,
-                w,
-                4,
-                f"#{s.get('number')} [{s.get('severity')}] age={s.get('age_days')}d | {title}",
-            )
-            _pdf_paragraph(pdf, w, 4, f"   Reasons: {reasons}")
-            _pdf_paragraph(pdf, w, 4, f"   Actions: {actions}")
-
-        _pdf_heading(pdf, f"PR risk & delay — open PRs ({len(risks)})", 11)
-        if not risks:
-            _pdf_paragraph(pdf, w, 4, "(no open PRs)")
-        for r in risks:
-            title = (r.get("title") or "")[:120]
-            delay = r.get("predicted_delay_days")
-            delay_s = f"{delay}d" if delay is not None else "n/a"
-            _pdf_paragraph(
-                pdf,
-                w,
-                4,
-                f"#{r.get('number')} risk={r.get('risk_score')}% bottleneck={r.get('bottleneck_probability')}% "
-                f"est_delay={delay_s} est_review_h={r.get('predicted_review_wait_hours')}",
-            )
-            _pdf_paragraph(pdf, w, 4, f"   {title} | author={r.get('author')}")
-
-        _pdf_heading(pdf, f"Oldest open PRs ({len(oldest)})", 11)
-        for o in oldest:
-            title = (o.get("title") or "")[:120]
-            _pdf_paragraph(
-                pdf,
-                w,
-                4,
-                f"#{o.get('number')} age={o.get('age_days')}d reviews={o.get('review_count')} | {title}",
-            )
-
-        _pdf_heading(pdf, f"Slowest merged PRs ({len(slowest)})", 11)
-        for s in slowest:
-            title = (s.get("title") or "")[:120]
-            ctd = s.get("cycle_time_days")
-            _pdf_paragraph(
-                pdf,
-                w,
-                4,
-                f"#{s.get('number')} cycle~{ctd}d | files={s.get('files_changed')} | {title}",
-            )
-
-        out = pdf.output()
-        return bytes(out) if isinstance(out, (bytes, bytearray)) else str(out).encode("latin-1")
+        ctx = ReportContext(
+            repo_owner=repo.owner,
+            repo_name=repo.name,
+            generated_at=generated_at,
+            total_prs=total_prs,
+            filters_label=filters_label,
+            kpi=kpi,
+            contributors=all_contributors,
+            contributor_count=len(all_contributors),
+            risks=all_risks,
+            stale=stale,
+            monthly=monthly,
+            throughput=throughput,
+            workflow=_compute_workflow_insights(prs, all_risks, all_contributors),
+            health=_compute_health_insights(kpi, all_risks, all_contributors, total_prs),
+        )
+        return build_engineering_report_pdf(ctx)

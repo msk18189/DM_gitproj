@@ -12,6 +12,8 @@ interface KPICardProps {
 }
 
 export default function KPICard({ title, value, icon, trend, unit }: KPICardProps) {
+  const displayValue = value ?? '-'
+  
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -24,7 +26,7 @@ export default function KPICard({ title, value, icon, trend, unit }: KPICardProp
           <p className="text-gray-400 text-xs font-medium uppercase tracking-wide">{title}</p>
           <div className="flex items-baseline gap-2 mt-3">
             <h3 className="text-2xl font-bold text-white">
-              {typeof value === 'number' && value % 1 !== 0 ? value.toFixed(1) : value}
+              {typeof displayValue === 'number' && displayValue % 1 !== 0 ? displayValue.toFixed(1) : displayValue}
             </h3>
             {unit && <span className="text-gray-400 text-xs">{unit}</span>}
           </div>

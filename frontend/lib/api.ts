@@ -26,10 +26,31 @@ export function formatApiError(err: unknown): string {
   if (err.code === 'ERR_NETWORK') {
     return `Cannot reach the API at ${API_BASE}. Start the backend with: cd backend && python main.py`
   }
-  const detail = err.response?.data?.detail
-  if (typeof detail === 'string') return detail
+  const data = err.response?.data as { error?: string; message?: string; detail?: unknown } | undefined
+  if (typeof data?.error === 'string') {
+    return data.error
+  }
+  if (typeof data?.message === 'string' && err.response?.status && err.response.status >= 400) {
+    return data.message
+  }
+  let detail = data?.detail ?? err.response?.data?.detail
   if (Array.isArray(detail)) {
-    return detail.map((d) => d.msg || d.message || String(d)).join(', ')
+    detail = detail.map((d) => d.msg || d.message || String(d)).join(', ')
+  }
+  if (typeof detail === 'string') {
+    const lowerDetail = detail.toLowerCase()
+    if (
+      lowerDetail.includes('access denied') ||
+      lowerDetail.includes('rate limit exceeded') ||
+      lowerDetail.includes('credentials') ||
+      lowerDetail.includes('token is invalid')
+    ) {
+      return `Public repositories work without tokens.
+GitHub tokens are only required for:
+- private repositories
+- higher API rate limits`
+    }
+    return detail
   }
   return err.message || 'Failed to analyze repository'
 }

@@ -1,74 +1,184 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+import io
+import re
+import time
+from typing import Optional, Dict, Any, List
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from database.db import get_db
+from pydantic import BaseModel
+
+from database.db import get_db, check_db_health
 from services.data_processor import DataProcessor
 from services.analytics import AnalyticsService
 from services.extended_analytics import ExtendedAnalytics
-from pydantic import BaseModel
-from datetime import datetime, timezone
-from typing import Optional
-import io
+from github.utils import parse_github_url
+from utils import cache as redis_cache
+from utils.logging_config import get_logger
+from utils.exceptions import (
+    GitHubPRDashboardException, ValidationError, 
+    InvalidTokenError, GitHubAPIError
+)
 
 router = APIRouter()
+logger = get_logger("api_routes")
 
 class RepositoryRequest(BaseModel):
     url: str
     github_token: Optional[str] = None
+    refresh: Optional[bool] = False
 
 class CompareRequest(BaseModel):
     url_a: str
     url_b: str
     github_token: Optional[str] = None
+    refresh: Optional[bool] = False
 
-@router.post("/api/analyze")
+# --- RATE LIMITER ---
+RATE_LIMIT_STORE = {}
+RATE_LIMIT_WINDOW = 3600  # 1 hour
+RATE_LIMIT_MAX_REQUESTS = 60  # 60 requests per hour
+
+def check_rate_limit(request: Request):
+    """
+    Lightweight, in-memory IP-based rate limiter.
+    Limits clients to 60 requests per hour on protected endpoints.
+    """
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    
+    # Clean up old timestamps
+    if ip not in RATE_LIMIT_STORE:
+        RATE_LIMIT_STORE[ip] = []
+        
+    timestamps = [t for t in RATE_LIMIT_STORE[ip] if now - t < RATE_LIMIT_WINDOW]
+    RATE_LIMIT_STORE[ip] = timestamps
+    
+    if len(timestamps) >= RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded. Maximum 60 requests per hour on this endpoint."
+        )
+        
+    RATE_LIMIT_STORE[ip].append(now)
+
+# --- UTILITIES ---
+def validate_token_format(token: Optional[str]) -> Optional[str]:
+    """Validates that a token (if provided) contains only safe characters."""
+    if not token:
+        return None
+    token_clean = token.strip()
+    if not token_clean:
+        return None
+    # GitHub PATs are alphanumeric + hyphens/underscores (e.g. ghp_..., github_pat_...)
+    if not re.match(r"^[a-zA-Z0-9_\-]+$", token_clean):
+        raise ValidationError("Invalid GitHub token format")
+    return token_clean
+
+
+def secure_error_handler(e: Exception) -> HTTPException:
+    """
+    Translates exceptions to clean, stack-trace-free HTTPExceptions.
+    Shields tokens, DB credentials, and internal traceback details.
+    """
+    # Handle FastAPI's internal HTTPExceptions
+    if isinstance(e, HTTPException):
+        return e
+
+    # Handle our custom exceptions
+    if isinstance(e, GitHubPRDashboardException):
+        logger.info(f"API expected error: {e.user_message} (Internal: {e.internal_details})")
+        return HTTPException(
+            status_code=e.status_code,
+            detail=e.user_message
+        )
+    
+    # Handle generic exceptions safely
+    error_msg = str(e).lower()
+    
+    # 1. Database-related exceptions
+    if any(db_err in error_msg for db_err in ("sqlalchemy", "psycopg", "asyncpg", "sqlite", "database", "connection")):
+        logger.warning(f"Database error details: {str(e)}")
+        return HTTPException(
+            status_code=500,
+            detail="A service-side data connection error occurred. Please try again later."
+        )
+        
+    # 2. Validation errors
+    if isinstance(e, ValueError):
+        logger.info(f"Validation error: {str(e)}")
+        return HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+        
+    # 3. Catch-all fallback
+    logger.error(f"Unhandled system error: {str(e)}", exc_info=True)
+    return HTTPException(
+        status_code=500,
+        detail="An internal server error occurred. Our engineers have been notified."
+    )
+
+
+# --- API ROUTES ---
+
+@router.post("/api/analyze", dependencies=[Depends(check_rate_limit)])
 def analyze_repository(request: RepositoryRequest, db: Session = Depends(get_db)):
     """Analyze a GitHub repository"""
     try:
-        print(f"Analyzing repository: {request.url}")
+        # Validate URL and Token formats
+        parsed = parse_github_url(request.url)
+        normalized_url = parsed.repo_url
+        token = validate_token_format(request.github_token)
+        
+        logger.info(
+            "Analyzing %s mode=%s branch=%s file=%s",
+            normalized_url,
+            parsed.mode,
+            parsed.branch,
+            parsed.file_path,
+        )
         processor = DataProcessor(db)
-        token = (request.github_token or "").strip() or None
-        result = processor.process_repository(request.url, github_token=token)
-        print(f"Analysis result: {result}")
-        if result.get("error"):
-            raise HTTPException(status_code=400, detail=result["error"])
+        result = processor.process_repository(
+            request.url,
+            github_token=token,
+            refresh=bool(request.refresh),
+        )
+        result["analytics_mode"] = parsed.mode
+        if parsed.mode == "file" and parsed.file_path:
+            result["file_path"] = parsed.file_path
+            result["branch"] = parsed.branch
         return result
+        
     except HTTPException:
         raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except GitHubPRDashboardException as e:
+        raise secure_error_handler(e)
     except Exception as e:
-        error_msg = str(e)
-        print(f"Error analyzing repository: {error_msg}")
+        raise secure_error_handler(e)
+
+@router.post("/api/compare", dependencies=[Depends(check_rate_limit)])
+def compare_repositories(request: CompareRequest, db: Session = Depends(get_db)):
+    """Compare two repositories side by side"""
+    try:
+        # Validate URLs and Token format
+        normalized_a = parse_github_url(request.url_a).repo_url
+        normalized_b = parse_github_url(request.url_b).repo_url
+        token = validate_token_format(request.github_token)
         
-        # Return helpful error message
-        if "MAX_NODE_LIMIT_EXCEEDED" in error_msg:
-            raise HTTPException(
-                status_code=400, 
-                detail="Repository is too large. Try a smaller repository like facebook/react"
-            )
-        elif "Bad credentials" in error_msg:
-            raise HTTPException(
-                status_code=400, 
-                detail="GitHub token is invalid or expired. Generate a new token at https://github.com/settings/tokens"
-            )
-        elif "NOT_FOUND" in error_msg or "Could not resolve to a Repository" in error_msg:
-            raise HTTPException(
-                status_code=400, 
-                detail="Repository not found or is private. Make sure: 1) Repository is public, 2) URL is correct (https://github.com/owner/repo), 3) Token has 'repo' scope for private repos"
-            )
-        elif "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
-            raise HTTPException(
-                status_code=400, 
-                detail="GitHub API request timed out. Try again in a moment."
-            )
-        elif "connection" in error_msg.lower() or "premature" in error_msg.lower():
-            raise HTTPException(
-                status_code=400, 
-                detail="Connection issue with GitHub API. Check your internet connection and try again."
-            )
-        else:
-            raise HTTPException(status_code=400, detail=error_msg)
+        processor = DataProcessor(db)
+        result_a = processor.process_repository(normalized_a, github_token=token, refresh=bool(request.refresh))
+        result_b = processor.process_repository(normalized_b, github_token=token, refresh=bool(request.refresh))
+        
+        ext = ExtendedAnalytics(db)
+        return ext.compare_repos(result_a["repo_id"], result_b["repo_id"])
+        
+    except HTTPException:
+        raise
+    except GitHubPRDashboardException as e:
+        raise secure_error_handler(e)
+    except Exception as e:
+        raise secure_error_handler(e)
 
 @router.get("/api/kpi/{repo_id}")
 def get_kpi(
@@ -79,8 +189,13 @@ def get_kpi(
     db: Session = Depends(get_db),
 ):
     """Get KPI summary for a repository"""
-    ext = ExtendedAnalytics(db)
-    return ext.get_kpi_with_duration(repo_id, days, author, state)
+    try:
+        ext = ExtendedAnalytics(db)
+        return ext.get_kpi_with_duration(repo_id, days, author, state)
+    except GitHubPRDashboardException as e:
+        raise secure_error_handler(e)
+    except Exception as e:
+        raise secure_error_handler(e)
 
 @router.get("/api/oldest-prs/{repo_id}")
 def get_oldest_prs(
@@ -91,8 +206,13 @@ def get_oldest_prs(
     db: Session = Depends(get_db),
 ):
     """Get oldest open PRs"""
-    ext = ExtendedAnalytics(db)
-    return ext.get_oldest_open_filtered(repo_id, limit, days=days, author=author)
+    try:
+        ext = ExtendedAnalytics(db)
+        return ext.get_oldest_open_filtered(repo_id, limit, days=days, author=author)
+    except GitHubPRDashboardException as e:
+        raise secure_error_handler(e)
+    except Exception as e:
+        raise secure_error_handler(e)
 
 @router.get("/api/slowest-prs/{repo_id}")
 def get_slowest_prs(
@@ -103,8 +223,13 @@ def get_slowest_prs(
     db: Session = Depends(get_db),
 ):
     """Get slowest merged PRs"""
-    ext = ExtendedAnalytics(db)
-    return ext.get_slowest_merged_filtered(repo_id, limit, days=days, author=author)
+    try:
+        ext = ExtendedAnalytics(db)
+        return ext.get_slowest_merged_filtered(repo_id, limit, days=days, author=author)
+    except GitHubPRDashboardException as e:
+        raise secure_error_handler(e)
+    except Exception as e:
+        raise secure_error_handler(e)
 
 @router.get("/api/contributor-activity/{repo_id}")
 def get_contributor_activity(
@@ -115,8 +240,13 @@ def get_contributor_activity(
     db: Session = Depends(get_db),
 ):
     """Get contributor activity"""
-    ext = ExtendedAnalytics(db)
-    return ext.get_contributors_filtered(repo_id, days=days, author=author, state=state)
+    try:
+        ext = ExtendedAnalytics(db)
+        return ext.get_contributors_filtered(repo_id, days=days, author=author, state=state)
+    except GitHubPRDashboardException as e:
+        raise secure_error_handler(e)
+    except Exception as e:
+        raise secure_error_handler(e)
 
 @router.get("/api/monthly-flow/{repo_id}")
 def get_monthly_flow(
@@ -128,8 +258,13 @@ def get_monthly_flow(
     db: Session = Depends(get_db),
 ):
     """Get monthly PR flow"""
-    ext = ExtendedAnalytics(db)
-    return ext.get_monthly_flow_filtered(repo_id, months, days=days, author=author, state=state)
+    try:
+        ext = ExtendedAnalytics(db)
+        return ext.get_monthly_flow_filtered(repo_id, months, days=days, author=author, state=state)
+    except GitHubPRDashboardException as e:
+        raise secure_error_handler(e)
+    except Exception as e:
+        raise secure_error_handler(e)
 
 @router.get("/api/throughput/{repo_id}")
 def get_throughput(
@@ -141,47 +276,48 @@ def get_throughput(
     db: Session = Depends(get_db),
 ):
     """Get PR throughput"""
-    ext = ExtendedAnalytics(db)
-    return ext.get_throughput_filtered(repo_id, weeks, days=days, author=author, state=state)
+    try:
+        ext = ExtendedAnalytics(db)
+        return ext.get_throughput_filtered(repo_id, weeks, days=days, author=author, state=state)
+    except GitHubPRDashboardException as e:
+        raise secure_error_handler(e)
+    except Exception as e:
+        raise secure_error_handler(e)
 
 @router.get("/api/authors/{repo_id}")
 def get_authors(repo_id: int, db: Session = Depends(get_db)):
     """List PR authors for filter dropdown"""
-    ext = ExtendedAnalytics(db)
-    return {"authors": ext.get_authors(repo_id)}
+    try:
+        ext = ExtendedAnalytics(db)
+        return {"authors": ext.get_authors(repo_id)}
+    except GitHubPRDashboardException as e:
+        raise secure_error_handler(e)
+    except Exception as e:
+        raise secure_error_handler(e)
 
 @router.get("/api/pr-risk/{repo_id}")
 def get_pr_risk(repo_id: int, limit: int = 15, db: Session = Depends(get_db)):
     """ML risk & delay predictions for open PRs"""
-    ext = ExtendedAnalytics(db)
-    return ext.get_pr_risk_panel(repo_id, limit)
+    try:
+        ext = ExtendedAnalytics(db)
+        return ext.get_pr_risk_panel(repo_id, limit)
+    except GitHubPRDashboardException as e:
+        raise secure_error_handler(e)
+    except Exception as e:
+        raise secure_error_handler(e)
 
 @router.get("/api/stale-alerts/{repo_id}")
 def get_stale_alerts(repo_id: int, db: Session = Depends(get_db)):
     """Stale PR alerts with recommendations"""
-    ext = ExtendedAnalytics(db)
-    return ext.get_stale_recommendations(repo_id)
-
-@router.post("/api/compare")
-def compare_repositories(request: CompareRequest, db: Session = Depends(get_db)):
-    """Compare two repositories side by side"""
     try:
-        processor = DataProcessor(db)
-        token = (request.github_token or "").strip() or None
-        result_a = processor.process_repository(request.url_a, github_token=token)
-        result_b = processor.process_repository(request.url_b, github_token=token)
-        if result_a.get("error"):
-            raise HTTPException(status_code=400, detail=f"Repo A: {result_a['error']}")
-        if result_b.get("error"):
-            raise HTTPException(status_code=400, detail=f"Repo B: {result_b['error']}")
         ext = ExtendedAnalytics(db)
-        return ext.compare_repos(result_a["repo_id"], result_b["repo_id"])
-    except HTTPException:
-        raise
+        return ext.get_stale_recommendations(repo_id)
+    except GitHubPRDashboardException as e:
+        raise secure_error_handler(e)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise secure_error_handler(e)
 
-@router.get("/api/export/{repo_id}")
+@router.get("/api/export/{repo_id}", dependencies=[Depends(check_rate_limit)])
 def export_report(
     repo_id: int,
     days: Optional[int] = None,
@@ -198,11 +334,12 @@ def export_report(
             media_type="text/csv",
             headers={"Content-Disposition": f"attachment; filename=pr_report_{repo_id}.csv"},
         )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    except GitHubPRDashboardException as e:
+        raise secure_error_handler(e)
+    except Exception as e:
+        raise secure_error_handler(e)
 
-
-@router.get("/api/export-pdf/{repo_id}")
+@router.get("/api/export-pdf/{repo_id}", dependencies=[Depends(check_rate_limit)])
 def export_report_pdf(
     repo_id: int,
     days: Optional[int] = None,
@@ -219,9 +356,10 @@ def export_report_pdf(
             media_type="application/pdf",
             headers={"Content-Disposition": f"attachment; filename=pr_report_{repo_id}.pdf"},
         )
-    except ValueError as e:
-        status = 404 if "not found" in str(e).lower() else 400
-        raise HTTPException(status_code=status, detail=str(e))
+    except GitHubPRDashboardException as e:
+        raise secure_error_handler(e)
+    except Exception as e:
+        raise secure_error_handler(e)
 
 @router.get("/api/features")
 def get_all_features():
@@ -321,40 +459,35 @@ def get_all_features():
                     }
                 ]
             },
-            "ml_models": {
-                "description": "5 ML models for predictions",
-                "models": [
+            "statistical_engineering_analytics": {
+                "description": "Deterministic heuristic and repo-relative statistical scoring (no trained ML deserialization)",
+                "signals": [
                     {
-                        "name": "Delay Prediction",
-                        "algorithm": "Gradient Boosting Regressor",
-                        "purpose": "Predict PR merge delay in days",
-                        "features": ["files_changed", "commit_count", "review_count", "lines_added", "lines_deleted", "reviewer_count"]
+                        "name": "Merge delay outlook",
+                        "method": "Weighted blend of age, churn, review depth, contributor baselines",
+                        "inputs": ["files_changed", "commit_count", "review_count", "lines_added", "lines_deleted"],
                     },
                     {
-                        "name": "Bottleneck Detection",
-                        "algorithm": "Isolation Forest",
-                        "purpose": "Identify stuck PRs",
-                        "features": ["wait_for_review_hours", "review_duration_hours", "comment_count", "commit_count", "age_days"]
+                        "name": "Bottleneck pressure",
+                        "method": "Review wait / activity imbalance heuristics",
+                        "inputs": ["wait_for_review_hours", "review_duration_hours", "comment_count", "commit_count"],
                     },
                     {
-                        "name": "Risk Scoring",
-                        "algorithm": "Logistic Regression",
-                        "purpose": "Estimate PR risk level (0-1)",
-                        "features": ["change_requests", "review_comments", "files_changed", "lines_changed", "author_merge_rate"]
+                        "name": "Risk index",
+                        "method": "Rule + distribution-based signals scaled 0–100",
+                        "inputs": ["change_requests", "reviews", "churn", "age", "contributor_merge_rate"],
                     },
                     {
-                        "name": "Review Wait Prediction",
-                        "algorithm": "Random Forest Regressor",
-                        "purpose": "Predict review waiting time in hours",
-                        "features": ["reviewer_count", "contributor_activity", "files_changed", "labels", "weekly_activity"]
+                        "name": "Review wait outlook",
+                        "method": "Hours-to-first-review style signals from timeline data",
+                        "inputs": ["reviewer_count", "files_changed", "comment_count", "author_activity"],
                     },
                     {
-                        "name": "Contributor Segmentation",
-                        "algorithm": "K-Means Clustering",
-                        "purpose": "Group contributors by activity patterns",
-                        "features": ["merged_prs", "avg_cycle_time", "review_activity", "stale_pr_count"]
-                    }
-                ]
+                        "name": "Contributor patterns",
+                        "method": "Aggregated merge/cycle/review stats per author (no clustering artifacts loaded from disk)",
+                        "inputs": ["merged_prs", "avg_cycle_time", "review_activity", "stale_pr_count"],
+                    },
+                ],
             }
         },
         "api_endpoints": {
@@ -380,9 +513,9 @@ def get_all_features():
             }
         },
         "health_checks": {
-            "database": "SQLite connection and schema",
+            "database": "PostgreSQL/SQLite connection and schema",
             "github_api": "GitHub GraphQL API connectivity",
-            "ml_models": "ML model availability",
+            "pr_analytics_engine": "Statistical analytics module availability (no unsafe model load)",
             "data_integrity": "PR data consistency"
         },
         "supported_repositories": {
@@ -395,21 +528,33 @@ def get_all_features():
             ]
         },
         "limitations": {
-            "pr_limit": "50 PRs per analysis (optimized for performance)",
+            "pr_limit": "Configurable fetch limit (default 100 PRs)",
             "rate_limit": "60 requests/hour without token, 5000 with token",
-            "response_time": "5-15 seconds per repository",
-            "data_retention": "Stored in SQLite database"
+            "response_time": "3-15 seconds per repository",
+            "data_retention": "Stored in configured database"
         },
         "tech_stack": {
             "backend": "FastAPI, SQLAlchemy, Python",
             "frontend": "Next.js, TypeScript, Tailwind CSS, Recharts",
-            "database": "SQLite",
-            "ml": "scikit-learn, XGBoost, LightGBM"
+            "database": "PostgreSQL (Production) / SQLite (Local fallback)",
+            "analytics_engine": "Statistical and heuristic PR intelligence (no serialized model deserialization)"
         }
     }
 
+@router.get("/health")
+async def health():
+    """Service health status endpoint with detailed DB and Cache checks"""
+    db_health = await check_db_health()
+    redis_health = redis_cache.check_health()
+    status = "ok" if db_health["status"] == "healthy" else "degraded"
+    return {
+        "status": status,
+        "database": db_health,
+        "cache": redis_health
+    }
+
 @router.get("/api/system-status")
-def get_system_status(db: Session = Depends(get_db)):
+async def get_system_status(db: Session = Depends(get_db)):
     """Get system status and diagnostics"""
     from database.models import Repository, PullRequest, Contributor
     
@@ -419,54 +564,69 @@ def get_system_status(db: Session = Depends(get_db)):
         pr_count = db.query(PullRequest).count()
         contributor_count = db.query(Contributor).count()
         
-        # Check database
-        db_status = "✅ Connected"
+        # Check database health
+        db_health = await check_db_health()
+        db_status = "Connected" if db_health["status"] == "healthy" else "Degraded"
+        
+        # Check Redis cache health
+        redis_health = redis_cache.check_health()
+        redis_status = "Available" if redis_health["status"] == "healthy" else "Unavailable"
         
         # Check GitHub API
         try:
             from github.client import GitHubClient
             client = GitHubClient()
-            github_status = "✅ Available"
+            github_status = "Available"
         except Exception as e:
-            github_status = f"⚠️ Error: {str(e)}"
+            github_status = f"Error: {str(e)}"
         
-        # Check ML models
+        # Analytics engine facade (no pickle/joblib model loading at runtime)
         try:
             from ml.models import MLModels
-            ml_models = MLModels()
-            ml_status = "✅ Available"
+
+            _ = MLModels()
+            analytics_status = "Active (statistical)"
         except Exception as e:
-            ml_status = f"⚠️ Error: {str(e)}"
+            analytics_status = f"Warning: {str(e)}"
         
         return {
-            "status": "healthy",
+            "status": "healthy" if db_health["status"] == "healthy" and redis_health["status"] == "healthy" else "degraded",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "database": {
                 "status": db_status,
                 "repositories": repo_count,
                 "pull_requests": pr_count,
-                "contributors": contributor_count
+                "contributors": contributor_count,
+                "details": db_health["details"]
             },
             "services": {
                 "github_api": github_status,
-                "ml_models": ml_status,
-                "database": db_status
+                "pr_analytics_engine": analytics_status,
+                "database": db_status,
+                "redis_cache": redis_status
             },
             "health_checks": {
-                "database_connection": "✅ Pass" if db_status == "✅ Connected" else "❌ Fail",
-                "github_api_access": "✅ Pass" if "✅" in github_status else "❌ Fail",
-                "ml_models_loaded": "✅ Pass" if "✅" in ml_status else "⚠️ Warning",
-                "data_integrity": "✅ Pass" if pr_count > 0 else "⚠️ No data"
+                "database_connection": "Pass" if db_health["status"] == "healthy" else "Fail",
+                "redis_cache_access": "Pass" if redis_health["status"] == "healthy" else "Fail",
+                "github_api_access": "Pass" if "Available" in github_status else "Fail",
+                "analytics_engine_ready": "Pass" if "Active" in analytics_status else "Warning",
+                "data_integrity": "Pass" if pr_count > 0 else "No data"
             },
             "recommendations": [
-                "Analyze more repositories to build better ML models" if pr_count < 100 else "Good data volume for ML",
+                "Analyze more repositories for richer statistical baselines"
+                if pr_count < 100
+                else "Good data volume for repo-relative scoring",
                 "Check GitHub token if API access fails" if "Error" in github_status else "GitHub API working",
-                "Install ML dependencies if models unavailable" if "Error" in ml_status else "ML models ready"
+                "Review analytics_engine service if diagnostics show warnings"
+                if "Warning" in analytics_status
+                else "Statistical analytics engine operational",
+                "Start Redis server if cache access fails" if redis_health["status"] != "healthy" else "Redis cache active"
             ]
         }
     except Exception as e:
+        logger.error("System status failed: %s", e, exc_info=True)
         return {
             "status": "error",
-            "error": str(e),
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "error": "Unable to retrieve system status.",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }

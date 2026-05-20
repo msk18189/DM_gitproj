@@ -30,7 +30,7 @@ import {
   getStaleAlerts,
 } from '@/lib/api'
 import { formatDurationDisplay, formatDurationFromDays } from '@/lib/format'
-import { AlertCircle, Zap } from 'lucide-react'
+import { AlertCircle, Info, Zap } from 'lucide-react'
 
 const defaultFilters: DashboardFiltersState = {
   days: null,
@@ -44,7 +44,9 @@ export default function Home() {
   const [githubToken, setGithubToken] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [infoMessage, setInfoMessage] = useState<string | null>(null)
   const [data, setData] = useState<any>(null)
+  const [emptyRepo, setEmptyRepo] = useState(false)
   const [authors, setAuthors] = useState<string[]>([])
   const [filters, setFilters] = useState<DashboardFiltersState>(defaultFilters)
 
@@ -73,22 +75,23 @@ export default function Home() {
           getAuthors(id),
         ])
 
-        const reviewTurnaround = contributors.map((c: any) => ({
+        const safeContributors = Array.isArray(contributors) ? contributors : []
+        const reviewTurnaround = safeContributors.map((c: any) => ({
           username: c.username,
           avg_wait_hours: (c.avg_wait_for_review || 0) * 24,
         }))
 
-        setAuthors(authorList)
+        setAuthors(authorList ?? [])
         setData({
-          kpi,
-          oldest,
-          slowest,
-          contributors,
-          monthlyFlow,
-          throughput,
-          reviewTurnaround,
-          prRisk,
-          staleAlerts,
+          kpi: kpi ?? {},
+          oldest: Array.isArray(oldest) ? oldest : [],
+          slowest: Array.isArray(slowest) ? slowest : [],
+          contributors: safeContributors,
+          monthlyFlow: Array.isArray(monthlyFlow) ? monthlyFlow : [],
+          throughput: Array.isArray(throughput) ? throughput : [],
+          reviewTurnaround: reviewTurnaround ?? [],
+          prRisk: Array.isArray(prRisk) ? prRisk : [],
+          staleAlerts: Array.isArray(staleAlerts) ? staleAlerts : [],
         })
       } catch (err: unknown) {
         setError(formatApiError(err) || 'Failed to load dashboard data')
@@ -100,18 +103,49 @@ export default function Home() {
   const handleAnalyze = async (url: string, token?: string) => {
     setIsLoading(true)
     setError(null)
+    setInfoMessage(null)
+    setEmptyRepo(false)
+    setData(null)
     setRepoUrl(url)
     setFilters(defaultFilters)
     try {
       const result = await analyzeRepository(url, token)
       setRepoId(result.repo_id)
+
+      if (result.total_prs === 0) {
+        setEmptyRepo(true)
+        setInfoMessage(
+          result.message || 'No Pull Requests Found for this repository or file path.'
+        )
+        return
+      }
+
+      if (result.analytics_mode === 'file' && result.file_path) {
+        setInfoMessage(
+          `File analytics: showing PRs that modified ${result.file_path}` +
+            (result.branch ? ` (branch: ${result.branch})` : '')
+        )
+      }
+
       await loadDashboardData(result.repo_id, defaultFilters)
     } catch (err: unknown) {
       setError(formatApiError(err))
+      setRepoId(null)
     } finally {
       setIsLoading(false)
     }
   }
+
+  const hasAnalyticsData =
+    data &&
+    (data.kpi?.open_prs > 0 ||
+      data.oldest?.length > 0 ||
+      data.slowest?.length > 0 ||
+      data.contributors?.length > 0 ||
+      (data.monthlyFlow?.some?.(
+        (m: { created?: number; merged?: number; closed?: number }) =>
+          (m.created || 0) + (m.merged || 0) + (m.closed || 0) > 0
+      ) ?? false))
 
   const handleApplyFilters = () => {
     if (repoId) loadDashboardData(repoId, filters)
@@ -177,7 +211,54 @@ export default function Home() {
           </motion.div>
         )}
 
-        {data && repoId && (
+        {infoMessage && !error && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className={`card mb-8 flex items-start gap-3 ${
+              emptyRepo
+                ? 'bg-amber-900/20 border-amber-700'
+                : 'bg-blue-900/20 border-blue-700'
+            }`}
+          >
+            <Info
+              className={`w-5 h-5 flex-shrink-0 mt-0.5 ${
+                emptyRepo ? 'text-amber-400' : 'text-blue-400'
+              }`}
+            />
+            <div>
+              <h3
+                className={`font-semibold ${
+                  emptyRepo ? 'text-amber-400' : 'text-blue-400'
+                }`}
+              >
+                {emptyRepo ? 'No Pull Requests Found' : 'Notice'}
+              </h3>
+              <p
+                className={`text-sm ${
+                  emptyRepo ? 'text-amber-200' : 'text-blue-200'
+                }`}
+              >
+                {infoMessage}
+              </p>
+            </div>
+          </motion.div>
+        )}
+
+        {data && repoId && !hasAnalyticsData && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="card bg-dark-800 border-dark-600 mb-8 text-center py-12"
+          >
+            <p className="text-gray-300 font-medium">Insufficient Analytics Data</p>
+            <p className="text-gray-500 text-sm mt-2">
+              Not enough pull request history to render charts and KPIs for the current filters.
+            </p>
+          </motion.div>
+        )}
+
+        {data && repoId && hasAnalyticsData && (
           <>
             <DashboardFilters
               authors={authors}

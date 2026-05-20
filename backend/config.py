@@ -11,8 +11,8 @@ GITHUB_API_URL = "https://api.github.com/graphql"
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./pr_dashboard.db")
 
 # Analytics
-STALE_PR_DAYS = 30
-PR_FETCH_LIMIT = 100
+STALE_PR_DAYS = int(os.getenv("STALE_PR_DAYS", "30"))
+PR_FETCH_LIMIT = int(os.getenv("PR_FETCH_LIMIT", "100"))
 
 # ML Models
 ML_MODELS_DIR = "ml/trained_models"
@@ -24,9 +24,6 @@ API_HOST = "0.0.0.0"
 API_PORT = 8000
 API_RELOAD = True
 
-# CORS — Next.js may use any port 3000–3019 when lower ports are busy
-CORS_ORIGINS = [
-    f"http://{host}:{port}"
-    for host in ("localhost", "127.0.0.1")
-    for port in range(3000, 3020)
-]
+# CORS — Configurable from environment variable, falling back to localhost:3000
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+CORS_ORIGINS = [origin.strip() for origin in FRONTEND_URL.split(",") if origin.strip()]

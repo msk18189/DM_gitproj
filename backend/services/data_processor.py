@@ -4,52 +4,36 @@ from sqlalchemy.orm import Session
 from database.models import PullRequest, Repository, Contributor, MLPrediction
 from github.client import GitHubClient
 import numpy as np
+from utils.logging_config import get_logger
+from utils.exceptions import (
+    GitHubPRDashboardException, EmptyRepositoryError, GitHubAPIError
+)
 
-def parse_github_repo_url(repo_url: str) -> tuple[str, str]:
-    """Parse owner/repo from various GitHub URL formats."""
-    url = repo_url.strip().rstrip("/")
-    if url.endswith(".git"):
-        url = url[:-4]
-    if "github.com" in url:
-        path = url.split("github.com/", 1)[-1]
-    else:
-        path = url
-    parts = [p for p in path.split("/") if p and p not in ("tree", "blob", "pulls", "issues")]
-    if len(parts) < 2:
-        raise ValueError(
-            "Invalid GitHub URL. Use https://github.com/owner/repo or owner/repo"
-        )
-    return parts[0], parts[1]
+from github.utils import parse_github_url
 
+logger = get_logger("data_processor")
 
 class DataProcessor:
     def __init__(self, db: Session):
         self.db = db
-        self.ml_models = None  # Lazy load ML models
-    
-    def _get_ml_models(self):
-        """Lazy load ML models to avoid import errors"""
-        if self.ml_models is None:
-            try:
-                from ml.models import MLModels
-                self.ml_models = MLModels()
-                print("[ML] ML models loaded successfully")
-            except Exception as e:
-                print(f"[ML WARNING] Could not load ML models: {str(e)}")
-                self.ml_models = False  # Mark as failed
-        return self.ml_models if self.ml_models else None
-    
-    def process_repository(self, repo_url: str, github_token: Optional[str] = None) -> Dict[str, Any]:
+
+    def process_repository(self, repo_url: str, github_token: Optional[str] = None, refresh: bool = False) -> Dict[str, Any]:
         """Process GitHub repository and extract PR data.
 
         github_token: optional PAT from the user (for private repos or higher limits).
         Falls back to GITHUB_TOKEN in environment when omitted.
         """
         try:
-            # Parse URL
-            owner, repo_name = parse_github_repo_url(repo_url)
-            
-            print(f"[1/6] Processing repository: {owner}/{repo_name}")
+            parsed = parse_github_url(repo_url)
+            owner, repo_name = parsed.owner, parsed.repo
+            normalized_url = parsed.repo_url
+
+            logger.info(
+                "Processing %s/%s mode=%s",
+                owner,
+                repo_name,
+                parsed.mode,
+            )
             
             # Check if repo exists in DB
             repo = self.db.query(Repository).filter(
@@ -58,39 +42,76 @@ class DataProcessor:
             ).first()
             
             if not repo:
-                repo = Repository(owner=owner, name=repo_name, url=repo_url)
+                repo = Repository(owner=owner, name=repo_name, url=normalized_url)
                 self.db.add(repo)
                 self.db.commit()
-                print(f"[2/6] Created new repository record: {repo.id}")
+                logger.debug(f"Created new repository record: {repo.id}")
             else:
-                print(f"[2/6] Using existing repository record: {repo.id}")
+                # Update URL if it was not normalized previously
+                if repo.url != normalized_url:
+                    repo.url = normalized_url
+                    self.db.commit()
+                logger.debug(f"Using existing repository record: {repo.id}")
             
             # Fetch PR data from GitHub (user token overrides env for this run)
             client = GitHubClient(token=github_token.strip() if github_token else None)
-            print(f"[3/6] Fetching PRs from GitHub...")
-            raw_prs = client.fetch_pull_requests(owner, repo_name, first=50)
-            print(f"[3/6] Fetched {len(raw_prs)} PRs from GitHub")
+            
+            # Validate repository access before fetching
+            logger.debug(f"Validating repository access...")
+            repo_info = client.validate_repository(owner, repo_name)
+            
+            # Log whether it's public or private to help with debugging auth flow
+            if repo_info.get("is_private"):
+                logger.info(f"Private repository detected. Token is required and active.")
+            else:
+                logger.info(f"Public repository detected. Tokens are optional.")
+
+            logger.info("Fetching PRs from GitHub...")
+            from config import PR_FETCH_LIMIT
+            raw_prs = client.fetch_pull_requests(owner, repo_name, limit=PR_FETCH_LIMIT)
+            if parsed.mode == "file" and parsed.file_path:
+                raw_prs = client.filter_prs_by_file_path(
+                    raw_prs, parsed.file_path, branch=parsed.branch
+                )
+                logger.info(
+                    "File-mode filter '%s': %s matching PRs",
+                    parsed.file_path,
+                    len(raw_prs),
+                )
+            logger.info("Fetched %s PRs from GitHub", len(raw_prs))
             
             existing_count = self.db.query(PullRequest).filter(
                 PullRequest.repo_id == repo.id
             ).count()
 
             if len(raw_prs) == 0:
+                # Empty repository - return graceful response
                 if existing_count > 0:
-                    print(f"[INFO] No new PRs from API; using {existing_count} cached PRs")
+                    logger.info(f"No new PRs from API; using {existing_count} cached PRs")
                     self._update_contributor_stats(repo.id)
                     self.db.commit()
                     return {
+                        "success": True,
                         "owner": owner,
                         "repo": repo_name,
                         "prs_processed": 0,
                         "repo_id": repo.id,
                         "total_prs": existing_count,
+                        "message": "No new pull requests, showing cached data"
                     }
-                raise Exception(
-                    "No pull requests found. The repo may have no PRs yet, "
-                    "or your GitHub token cannot access it."
-                )
+                else:
+                    # Truly empty repository
+                    logger.info(f"Repository {owner}/{repo_name} has no pull requests")
+                    self.db.commit()
+                    return {
+                        "success": True,
+                        "owner": owner,
+                        "repo": repo_name,
+                        "prs_processed": 0,
+                        "repo_id": repo.id,
+                        "total_prs": 0,
+                        "message": "This repository has no pull requests"
+                    }
             
             # Process and store PRs
             pr_count = 0
@@ -146,119 +167,74 @@ class DataProcessor:
                     self._generate_predictions_safe(existing_pr, parsed_pr)
 
                     if (idx + 1) % 10 == 0:
-                        print(f"[4/6] Processed {idx + 1}/{len(raw_prs)} PRs...")
+                        logger.debug(f"Processed {idx + 1}/{len(raw_prs)} PRs")
                 except Exception as e:
-                    print(f"[WARN] Error processing PR {raw_pr.get('number')}: {str(e)}")
+                    logger.warning(f"Error processing PR {raw_pr.get('number')}: {str(e)}")
                     continue
             
-            print(f"[4/6] Stored {pr_count} new PRs in database")
+            logger.info(f"Stored {pr_count} new PRs in database")
             
             # Update contributor stats
-            print(f"[5/6] Updating contributor statistics...")
+            logger.debug(f"Updating contributor statistics")
             self._update_contributor_stats(repo.id)
             
             self.db.commit()
             
-            print(f"[6/6] [SUCCESS] Successfully processed {pr_count} PRs for {owner}/{repo_name}")
+            logger.info(f"Successfully processed {pr_count} PRs for {owner}/{repo_name}")
             
+            total_prs = self.db.query(PullRequest).filter(
+                PullRequest.repo_id == repo.id
+            ).count()
+
             return {
+                "success": True,
                 "owner": owner,
                 "repo": repo_name,
                 "prs_processed": pr_count,
-                "repo_id": repo.id
+                "repo_id": repo.id,
+                "total_prs": total_prs,
+                "analytics_mode": parsed.mode,
+                "file_path": parsed.file_path if parsed.mode == "file" else None,
             }
-        except Exception as e:
-            print(f"[FATAL ERROR] {str(e)}")
+        except GitHubPRDashboardException:
+            # Re-raise our safe exceptions
             self.db.rollback()
             raise
+        except Exception as e:
+            logger.error(f"Unexpected error processing repository: {str(e)}", exc_info=True)
+            self.db.rollback()
+            raise GitHubAPIError("Failed to process repository", internal_details=str(e))
     
     def _generate_predictions_safe(self, pr: PullRequest, parsed_pr: Dict):
-        """Generate ML predictions safely - won't crash if ML fails"""
+        """Store PR-specific scores from statistical / heuristic analytics (no serialized models)."""
         try:
-            ml_models = self._get_ml_models()
-            if not ml_models:
-                print(f"[ML SKIP] Skipping ML predictions for PR {pr.pr_number}")
-                return
-            
-            # Prepare features with validation
-            try:
-                delay_features = [
-                    float(parsed_pr.get("files_changed", 0) or 0),
-                    float(parsed_pr.get("commit_count", 0) or 0),
-                    float(parsed_pr.get("review_count", 0) or 0),
-                    float(parsed_pr.get("lines_added", 0) or 0),
-                    float(parsed_pr.get("lines_deleted", 0) or 0),
-                    float(parsed_pr.get("reviewer_count", 0) or 0),
-                ]
-                
-                # Calculate age safely
-                from datetime import timezone
-                now = datetime.now(timezone.utc)
-                age_days = (now - pr.created_at).days if pr.state == "OPEN" else 0
-                
-                bottleneck_features = [
-                    float(parsed_pr.get("wait_for_review_hours", 0) or 0),
-                    float(parsed_pr.get("review_duration_hours", 0) or 0),
-                    float(parsed_pr.get("comment_count", 0) or 0),
-                    float(parsed_pr.get("commit_count", 0) or 0),
-                    float(age_days),
-                ]
-                
-                risk_features = [
-                    float(parsed_pr.get("change_request_count", 0) or 0),
-                    float(parsed_pr.get("review_count", 0) or 0),
-                    float(parsed_pr.get("files_changed", 0) or 0),
-                    float((parsed_pr.get("lines_added", 0) or 0) + (parsed_pr.get("lines_deleted", 0) or 0)),
-                    0.5,
-                ]
-                
-                review_wait_features = [
-                    float(parsed_pr.get("reviewer_count", 0) or 0),
-                    1.0,
-                    float(parsed_pr.get("files_changed", 0) or 0),
-                    0.0,
-                    1.0,
-                ]
-                
-                # Generate predictions
-                predicted_delay = ml_models.predict_delay(delay_features)
-                bottleneck_prob = ml_models.predict_bottleneck(bottleneck_features)
-                risk_score = ml_models.predict_risk(risk_features)
-                predicted_review_wait = ml_models.predict_review_wait(review_wait_features)
-                
-                # Validate predictions
-                predicted_delay = float(predicted_delay) if predicted_delay else 0.0
-                bottleneck_prob = float(bottleneck_prob) if bottleneck_prob else 0.0
-                risk_score = float(risk_score) if risk_score else 0.0
-                predicted_review_wait = float(predicted_review_wait) if predicted_review_wait else 0.0
+            from services.pr_analytics_v2 import compute_heuristic_scores_v2
+            from services.risk_heuristics import compute_heuristic_scores
 
-                # Fallback to heuristics when ML models are not trained (.pkl missing)
-                if predicted_delay == 0 and bottleneck_prob == 0 and risk_score == 0:
-                    from services.risk_heuristics import compute_heuristic_scores
-                    h = compute_heuristic_scores(pr)
-                    predicted_delay = h["predicted_delay_days"]
-                    bottleneck_prob = h["bottleneck_probability"] / 100.0
-                    risk_score = h["risk_score"] / 100.0
-                    predicted_review_wait = h["predicted_review_wait_hours"]
-                
-                # Store predictions
-                prediction = MLPrediction(
+            scores = None
+            try:
+                scores = compute_heuristic_scores_v2(pr, self.db)
+            except Exception as e:
+                logger.debug("V2 heuristics failed for PR %s: %s", pr.pr_number, e)
+                scores = compute_heuristic_scores(pr)
+
+            predicted_delay = float(scores["predicted_delay_days"])
+            bottleneck_prob = float(scores["bottleneck_probability"]) / 100.0
+            risk_score = float(scores["risk_score"]) / 100.0
+            predicted_review_wait = float(scores["predicted_review_wait_hours"])
+
+            self.db.query(MLPrediction).filter(MLPrediction.pr_id == pr.id).delete()
+            self.db.add(
+                MLPrediction(
                     pr_id=pr.id,
                     predicted_delay_days=predicted_delay,
                     bottleneck_probability=bottleneck_prob,
                     risk_score=risk_score,
                     predicted_review_wait=predicted_review_wait,
                 )
-                self.db.add(prediction)
-                print(f"[ML] Generated predictions for PR {pr.pr_number}")
-                
-            except Exception as e:
-                print(f"[ML ERROR] Error preparing features for PR {pr.pr_number}: {str(e)}")
-                # Continue without predictions
-                
+            )
         except Exception as e:
-            print(f"[ML ERROR] Error generating predictions: {str(e)}")
-            # Don't crash - continue processing
+            logger.warning("Error generating predictions for PR %s: %s", pr.pr_number, e)
     
     def _update_contributor_stats(self, repo_id: int):
         """Update contributor statistics"""
@@ -269,7 +245,7 @@ class DataProcessor:
                 PullRequest.repo_id == repo_id
             ).all()
             
-            print(f"[STATS] Processing {len(prs)} PRs for contributor stats...")
+            logger.debug(f"Processing {len(prs)} PRs for contributor stats")
             
             contributor_stats = {}
             for pr in prs:
@@ -335,9 +311,9 @@ class DataProcessor:
                         )
                         self.db.add(contributor)
                 except Exception as e:
-                    print(f"[WARN] Error updating contributor {username}: {str(e)}")
+                    logger.warning(f"Error updating contributor {username}: {str(e)}")
                     continue
             
-            print(f"[STATS] Updated {len(contributor_stats)} contributors")
+            logger.debug(f"Updated {len(contributor_stats)} contributors")
         except Exception as e:
-            print(f"[WARN] Error updating contributor stats: {str(e)}")
+            logger.warning(f"Error updating contributor stats: {str(e)}")

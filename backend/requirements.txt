@@ -8,3 +8,12 @@ xgboost==2.0.3
 lightgbm==4.1.0
 pydantic==2.5.0
 fpdf2==2.8.2
+asyncpg>=0.29.0
+aiosqlite>=0.19.0
+psycopg2-binary>=2.9.9
+numpy>=1.26.0
+httpx==0.25.2
+tenacity==8.2.3
+alembic==1.13.1
+slowapi==0.1.9
+structlog==23.2.0
