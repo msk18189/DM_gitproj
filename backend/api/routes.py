@@ -21,6 +21,59 @@ class CompareRequest(BaseModel):
     url_b: str
     github_token: Optional[str] = None
 
+
+def _map_github_error(error_msg: str) -> Optional[str]:
+    """Return a user-facing message for known GitHub access errors."""
+    if "PRIVATE_OR_MISSING:" in error_msg:
+        return error_msg.split("PRIVATE_OR_MISSING:", 1)[1].strip()
+    if "PRIVATE_OR_FORBIDDEN:" in error_msg:
+        return error_msg.split("PRIVATE_OR_FORBIDDEN:", 1)[1].strip()
+    if "Bad credentials" in error_msg:
+        return (
+            "GitHub token is invalid or expired. Create a new token at "
+            "https://github.com/settings/tokens (classic: enable 'repo' for private repos)."
+        )
+    if "NOT_FOUND" in error_msg or "Could not resolve to a Repository" in error_msg:
+        return (
+            "Repository not found or inaccessible. For private repos, paste a Personal Access Token "
+            "with read access (classic: 'repo' scope; fine-grained: grant this repository)."
+        )
+    if "MAX_NODE_LIMIT_EXCEEDED" in error_msg:
+        return "Repository is too large. Try a smaller repository."
+    if "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
+        return "GitHub API request timed out. Try again in a moment."
+    if "connection" in error_msg.lower() or "premature" in error_msg.lower():
+        return "Connection issue with GitHub API. Check your internet connection and try again."
+    return None
+
+
+@router.post("/api/verify-repo")
+def verify_repository_access(request: RepositoryRequest):
+    """Check that a token can read the repository (public or private) before full analysis."""
+    from services.data_processor import parse_github_repo_url
+    from github.client import GitHubClient
+
+    try:
+        owner, repo_name = parse_github_repo_url(request.url)
+        token = (request.github_token or "").strip() or None
+        client = GitHubClient(token=token)
+        meta = client.verify_repository_access(owner, repo_name)
+        return {
+            "ok": True,
+            "owner": owner,
+            "repo": repo_name,
+            "is_private": meta.get("isPrivate", False),
+            "url": meta.get("url"),
+            "has_token": bool(client.token),
+            "token_source": "user" if token else ("env" if client.token else "none"),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        mapped = _map_github_error(str(e))
+        raise HTTPException(status_code=400, detail=mapped or str(e))
+
+
 @router.post("/api/analyze")
 def analyze_repository(request: RepositoryRequest, db: Session = Depends(get_db)):
     """Analyze a GitHub repository"""
@@ -41,34 +94,27 @@ def analyze_repository(request: RepositoryRequest, db: Session = Depends(get_db)
         error_msg = str(e)
         print(f"Error analyzing repository: {error_msg}")
         
-        # Return helpful error message
-        if "MAX_NODE_LIMIT_EXCEEDED" in error_msg:
-            raise HTTPException(
-                status_code=400, 
-                detail="Repository is too large. Try a smaller repository like facebook/react"
-            )
-        elif "Bad credentials" in error_msg:
-            raise HTTPException(
-                status_code=400, 
-                detail="GitHub token is invalid or expired. Generate a new token at https://github.com/settings/tokens"
-            )
-        elif "NOT_FOUND" in error_msg or "Could not resolve to a Repository" in error_msg:
-            raise HTTPException(
-                status_code=400, 
-                detail="Repository not found or is private. Make sure: 1) Repository is public, 2) URL is correct (https://github.com/owner/repo), 3) Token has 'repo' scope for private repos"
-            )
-        elif "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
-            raise HTTPException(
-                status_code=400, 
-                detail="GitHub API request timed out. Try again in a moment."
-            )
-        elif "connection" in error_msg.lower() or "premature" in error_msg.lower():
-            raise HTTPException(
-                status_code=400, 
-                detail="Connection issue with GitHub API. Check your internet connection and try again."
-            )
-        else:
-            raise HTTPException(status_code=400, detail=error_msg)
+        mapped = _map_github_error(error_msg)
+        raise HTTPException(status_code=400, detail=mapped or error_msg)
+
+@router.get("/api/repositories")
+def get_repositories(db: Session = Depends(get_db)):
+    """List all analyzed repositories with basic stats"""
+    from database.models import Repository, PullRequest
+    repos = db.query(Repository).all()
+    out = []
+    for r in repos:
+        # Get count of open pull requests
+        open_prs_count = db.query(PullRequest).filter_by(repo_id=r.id, state="OPEN").count()
+        out.append({
+            "id": r.id,
+            "owner": r.owner,
+            "name": r.name,
+            "url": r.url,
+            "open_prs": open_prs_count
+        })
+    return out
+
 
 @router.get("/api/kpi/{repo_id}")
 def get_kpi(

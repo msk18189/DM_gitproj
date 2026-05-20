@@ -8,7 +8,9 @@ load_dotenv()
 
 class GitHubClient:
     def __init__(self, token: str = None):
-        self.token = token or os.getenv("GITHUB_TOKEN")
+        # User-supplied token takes priority; otherwise use server .env
+        user_token = (token or "").strip()
+        self.token = user_token or os.getenv("GITHUB_TOKEN") or None
         self.base_url = "https://api.github.com/graphql"
         
         # Build headers - use token if available
@@ -64,6 +66,33 @@ class GitHubClient:
             print(f"GitHub Client: Error: {str(e)}")
             raise
     
+    def verify_repository_access(self, owner: str, repo: str) -> Dict[str, Any]:
+        """Confirm the token can read this repository (works for private repos with correct PAT)."""
+        query = """
+        query($owner: String!, $repo: String!) {
+            repository(owner: $owner, name: $repo) {
+                name
+                isPrivate
+                url
+            }
+        }
+        """
+        data = self.query(query, {"owner": owner, "repo": repo})
+        repo_data = data.get("repository")
+        if not repo_data:
+            if not self.token:
+                raise Exception(
+                    "PRIVATE_OR_MISSING: This repository may be private or does not exist. "
+                    "Add a GitHub Personal Access Token with read access to private repositories "
+                    "(classic token: 'repo' scope; fine-grained: grant access to this repository)."
+                )
+            raise Exception(
+                "PRIVATE_OR_FORBIDDEN: Your token cannot access this repository. "
+                "Check the URL and ensure the token has 'repo' scope (classic) or "
+                "repository read permissions (fine-grained PAT)."
+            )
+        return repo_data
+
     def fetch_pull_requests(self, owner: str, repo: str, first: int = 50) -> List[Dict]:
         """Fetch PRs with reviews and commits - simplified query"""
         query = """

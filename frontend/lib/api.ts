@@ -34,6 +34,22 @@ export function formatApiError(err: unknown): string {
   return err.message || 'Failed to analyze repository'
 }
 
+export const verifyRepositoryAccess = async (url: string, githubToken?: string) => {
+  const response = await api.post('/api/verify-repo', {
+    url,
+    github_token: githubToken || null,
+  })
+  return response.data as {
+    ok: boolean
+    owner: string
+    repo: string
+    is_private: boolean
+    url?: string
+    has_token: boolean
+    token_source: 'user' | 'env' | 'none'
+  }
+}
+
 export const analyzeRepository = async (url: string, githubToken?: string) => {
   const response = await api.post('/api/analyze', {
     url,
@@ -144,3 +160,17 @@ export function getExportCsvUrl(repoId: number, filters?: DashboardFiltersState)
 export function getExportPdfUrl(repoId: number, filters?: DashboardFiltersState): string {
   return `${API_BASE}/api/export-pdf/${repoId}${exportQueryString(filters)}`
 }
+
+export interface AnalyzedRepo {
+  id: number
+  owner: string
+  name: string
+  url: string
+  open_prs: number
+}
+
+export async function getRepositories(): Promise<AnalyzedRepo[]> {
+  const response = await api.get('/api/repositories')
+  return response.data
+}
+

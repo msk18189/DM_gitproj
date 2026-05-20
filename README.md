@@ -82,7 +82,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 3. Install dependencies:
 ```bash
-pip install -r requirements.txt
+
 ```
 
 4. Create `.env` file:
@@ -93,7 +93,7 @@ cp .env.example .env
 
 5. Run backend:
 ```bash
-wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+python 
 ```
 
 Backend will be available at `http://localhost:8000`

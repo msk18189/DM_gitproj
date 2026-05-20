@@ -33,16 +33,16 @@ export function formatDurationFromDays(days: number): { value: string | number; 
 export function severityColor(severity: string): string {
   switch (severity) {
     case 'high':
-      return 'border-red-500/50 bg-red-900/20'
+      return 'border-palette-rose/40 bg-palette-rose-light'
     case 'medium':
-      return 'border-yellow-500/50 bg-yellow-900/20'
+      return 'border-palette-amber/40 bg-palette-amber-light'
     default:
-      return 'border-blue-500/50 bg-blue-900/20'
+      return 'border-palette-lime/40 bg-palette-lime-light'
   }
 }
 
 export function riskColor(score: number): string {
-  if (score >= 70) return 'text-red-400'
-  if (score >= 40) return 'text-yellow-400'
-  return 'text-green-400'
+  if (score >= 70) return 'text-palette-rose font-bold'
+  if (score >= 40) return 'text-palette-amber font-bold'
+  return 'text-palette-teal font-bold'
 }

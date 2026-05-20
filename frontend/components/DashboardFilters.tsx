@@ -1,7 +1,7 @@
 'use client'
 
 import { motion } from 'framer-motion'
-import { Filter } from 'lucide-react'
+import { SlidersHorizontal } from 'lucide-react'
 
 export interface DashboardFiltersState {
   days: number | null
@@ -23,18 +23,16 @@ export default function DashboardFilters({
   onApply,
 }: DashboardFiltersProps) {
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="card card-hover mb-8"
-    >
-      <div className="flex items-center gap-2 mb-4">
-        <Filter className="w-5 h-5 text-purple-400" />
-        <h3 className="text-lg font-bold">Filters</h3>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="card card-hover mb-8">
+      <div className="mb-4 flex items-center gap-2">
+        <SlidersHorizontal className="h-5 w-5 text-palette-orange" />
+        <h3 className="section-title">Filters</h3>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
         <div>
-          <label className="block text-xs text-gray-400 mb-1">Date range</label>
+          <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-wider text-midnight-500">
+            Date range
+          </label>
           <select
             value={filters.days ?? ''}
             onChange={(e) =>
@@ -43,7 +41,7 @@ export default function DashboardFilters({
                 days: e.target.value ? Number(e.target.value) : null,
               })
             }
-            className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm"
+            className="input-field text-sm"
           >
             <option value="">All time</option>
             <option value="30">Last 30 days</option>
@@ -52,11 +50,13 @@ export default function DashboardFilters({
           </select>
         </div>
         <div>
-          <label className="block text-xs text-gray-400 mb-1">Author</label>
+          <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-wider text-midnight-500">
+            Author
+          </label>
           <select
             value={filters.author}
             onChange={(e) => onChange({ ...filters, author: e.target.value })}
-            className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm"
+            className="input-field text-sm"
           >
             <option value="all">All authors</option>
             {authors.map((a) => (
@@ -67,11 +67,13 @@ export default function DashboardFilters({
           </select>
         </div>
         <div>
-          <label className="block text-xs text-gray-400 mb-1">PR state</label>
+          <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-wider text-midnight-500">
+            PR state
+          </label>
           <select
             value={filters.state}
             onChange={(e) => onChange({ ...filters, state: e.target.value })}
-            className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm"
+            className="input-field text-sm"
           >
             <option value="ALL">All states</option>
             <option value="OPEN">Open</option>
@@ -80,11 +82,7 @@ export default function DashboardFilters({
           </select>
         </div>
         <div className="flex items-end">
-          <button
-            type="button"
-            onClick={onApply}
-            className="w-full px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium transition"
-          >
+          <button type="button" onClick={onApply} className="btn-primary w-full text-sm">
             Apply filters
           </button>
         </div>
