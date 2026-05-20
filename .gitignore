@@ -3,7 +3,6 @@ backend/venv/
 backend/__pycache__/
 backend/*.pyc
 backend/.env
-backend/.env.example
 backend/pr_dashboard.db
 backend/ml/trained_models/
 backend/.pytest_cache/
@@ -44,11 +43,9 @@ Untitled
 
 # Misc — never commit env files (use SETUP_TOKEN.md for required variables)
 .env
-.env.example
 .env.local
 .env.*.local
 **/.env
-**/.env.example
 
 __pycache__/
 *.pyc
