@@ -20,23 +20,23 @@ interface PRRiskItem {
 export default function PRRiskPanel({ data }: { data: PRRiskItem[] }) {
   if (!data?.length) {
     return (
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="card card-hover mb-8">
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="card card-hover card-glow h-full">
         <div className="flex items-center gap-2 mb-2">
-          <Brain className="w-5 h-5 text-purple-400" />
-          <h3 className="text-lg font-bold">PR Risk & Delay Predictions</h3>
+          <Brain className="h-5 w-5 text-palette-orange" />
+          <h3 className="section-title">PR Risk & Delay Predictions</h3>
         </div>
-        <p className="text-gray-400 text-sm">No open PRs with ML predictions yet.</p>
+        <p className="text-sm text-midnight-400">No open PRs with ML predictions yet.</p>
       </motion.div>
     )
   }
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="card card-hover mb-8">
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="card card-hover card-glow h-full">
       <div className="flex items-center gap-2 mb-4">
-        <Brain className="w-5 h-5 text-purple-400" />
+        <Brain className="w-5 h-5 text-palette-rose" />
         <h3 className="text-lg font-bold">PR Risk & Delay Predictions</h3>
       </div>
-      <p className="text-xs text-gray-400 mb-4">
+      <p className="section-subtitle mb-4">
         {data[0]?._panel_note ||
           (data[0]?.score_source === 'heuristic'
             ? 'Rule-based risk estimates from PR age, reviews, and size (same signals as stale alerts). Train ML models for full predictions.'
@@ -45,8 +45,8 @@ export default function PRRiskPanel({ data }: { data: PRRiskItem[] }) {
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
-            <tr className="border-b border-dark-700">
-              <th className="px-3 py-2 text-left text-xs text-gray-400">#</th>
+            <tr className="border-b border-white/[0.06]">
+              <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-midnight-500">#</th>
               <th className="px-3 py-2 text-left text-xs text-gray-400">Title</th>
               <th className="px-3 py-2 text-left text-xs text-gray-400">Author</th>
               <th className="px-3 py-2 text-left text-xs text-gray-400">Risk</th>
@@ -57,8 +57,8 @@ export default function PRRiskPanel({ data }: { data: PRRiskItem[] }) {
           </thead>
           <tbody>
             {data.map((pr) => (
-              <tr key={pr.number} className="border-b border-dark-700/50 hover:bg-dark-700/50">
-                <td className="px-3 py-2 text-sm">{pr.number}</td>
+              <tr key={pr.number} className="border-b border-brown-100 transition hover:bg-brown-50">
+                <td className="px-3 py-2 text-sm text-midnight-200">{pr.number}</td>
                 <td className="px-3 py-2 text-sm max-w-xs truncate">{pr.title}</td>
                 <td className="px-3 py-2 text-sm">{pr.author}</td>
                 <td className={`px-3 py-2 text-sm font-bold ${riskColor(pr.risk_score)}`}>

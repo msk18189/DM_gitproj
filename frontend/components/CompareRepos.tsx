@@ -46,12 +46,12 @@ export default function CompareRepos({ defaultUrl, githubToken = '' }: CompareRe
   ]
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="card card-hover mb-8">
-      <div className="flex items-center gap-2 mb-4">
-        <GitCompare className="w-5 h-5 text-purple-400" />
-        <h3 className="text-lg font-bold">Compare Repositories</h3>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="card card-hover card-glow">
+      <div className="mb-4 flex items-center gap-2">
+        <GitCompare className="h-5 w-5 text-palette-emerald" />
+        <h3 className="section-title">Compare repositories</h3>
       </div>
-      <p className="text-xs text-gray-400 mb-4">
+      <p className="section-subtitle mb-4">
         For private repos, use the same token as in Analyze above, or paste a token below (only sent to your backend).
       </p>
       <div className="grid md:grid-cols-2 gap-4 mb-4">
@@ -60,14 +60,14 @@ export default function CompareRepos({ defaultUrl, githubToken = '' }: CompareRe
           value={urlA}
           onChange={(e) => setUrlA(e.target.value)}
           placeholder="Repository A URL"
-          className="px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm"
+          className="input-field text-sm"
         />
         <input
           type="text"
           value={urlB}
           onChange={(e) => setUrlB(e.target.value)}
           placeholder="Repository B URL"
-          className="px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-white text-sm"
+          className="input-field text-sm"
         />
       </div>
       <div className="mb-4">
@@ -87,7 +87,7 @@ export default function CompareRepos({ defaultUrl, githubToken = '' }: CompareRe
         type="button"
         onClick={handleCompare}
         disabled={loading || !urlA.trim() || !urlB.trim()}
-        className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-lg text-sm font-medium flex items-center gap-2"
+        className="btn-primary flex items-center gap-2 text-sm disabled:opacity-50"
       >
         {loading ? <Loader className="w-4 h-4 animate-spin" /> : null}
         Compare

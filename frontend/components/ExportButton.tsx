@@ -15,18 +15,18 @@ export default function ExportButton({ repoId, filters }: ExportButtonProps) {
       <button
         type="button"
         onClick={() => window.open(getExportCsvUrl(repoId, filters), '_blank')}
-        className="flex items-center gap-2 px-4 py-2 bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-lg text-sm text-white transition"
+        className="btn-secondary flex items-center gap-2 text-sm"
       >
-        <Download className="w-4 h-4" />
-        Export CSV
+        <Download className="h-4 w-4 text-palette-teal" />
+        CSV
       </button>
       <button
         type="button"
         onClick={() => window.open(getExportPdfUrl(repoId, filters), '_blank')}
-        className="flex items-center gap-2 px-4 py-2 bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-lg text-sm text-white transition"
+        className="btn-primary flex items-center gap-2 text-sm"
       >
-        <FileText className="w-4 h-4" />
-        Export PDF
+        <FileText className="h-4 w-4" />
+        PDF
       </button>
     </div>
   )

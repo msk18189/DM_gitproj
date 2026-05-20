@@ -1,7 +1,6 @@
 'use client'
 
 import { motion } from 'framer-motion'
-import { ChevronRight } from 'lucide-react'
 
 interface Column {
   key: string
@@ -23,24 +22,20 @@ export default function DataTable({
   emptyMessage = 'No data available',
 }: DataTableProps) {
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="card card-hover"
-    >
-      <h3 className="text-lg font-bold mb-4">{title}</h3>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="card card-hover card-glow">
+      <h3 className="section-title mb-4">{title}</h3>
 
       {data.length === 0 ? (
-        <p className="text-gray-400 text-center py-8">{emptyMessage}</p>
+        <p className="py-10 text-center text-sm text-midnight-400">{emptyMessage}</p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto rounded-xl border border-white/[0.04]">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-dark-700">
+              <tr className="border-b border-brown-200 bg-brown-50">
                 {columns.map((col) => (
                   <th
                     key={col.key}
-                    className="px-4 py-3 text-left text-sm font-semibold text-gray-300"
+                    className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-midnight-400"
                   >
                     {col.label}
                   </th>
@@ -49,19 +44,16 @@ export default function DataTable({
             </thead>
             <tbody>
               {data.map((row, idx) => (
-                <motion.tr
+                <tr
                   key={idx}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ delay: idx * 0.05 }}
-                  className="border-b border-dark-700 hover:bg-dark-700 transition"
+                  className="border-b border-midnight-800 transition hover:bg-palette-emerald-light/50"
                 >
                   {columns.map((col) => (
-                    <td key={col.key} className="px-4 py-3 text-sm text-gray-300">
+                    <td key={col.key} className="px-4 py-3 text-sm text-midnight-200">
                       {col.render ? col.render(row[col.key], row) : row[col.key]}
                     </td>
                   ))}
-                </motion.tr>
+                </tr>
               ))}
             </tbody>
           </table>

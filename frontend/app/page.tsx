@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { motion } from 'framer-motion'
+import AppShell, { NavSection } from '@/components/AppShell'
 import RepositoryInput from '@/components/RepositoryInput'
 import KPICard from '@/components/KPICard'
 import DataTable from '@/components/DataTable'
@@ -10,6 +11,7 @@ import PRRiskPanel from '@/components/PRRiskPanel'
 import StalePRAlerts from '@/components/StalePRAlerts'
 import CompareRepos from '@/components/CompareRepos'
 import ExportButton from '@/components/ExportButton'
+import MergeRateDonut from '@/components/MergeRateDonut'
 import {
   MonthlyFlowChart,
   ThroughputChart,
@@ -30,12 +32,32 @@ import {
   getStaleAlerts,
 } from '@/lib/api'
 import { formatDurationDisplay, formatDurationFromDays } from '@/lib/format'
-import { AlertCircle, Zap } from 'lucide-react'
+import { loadGithubToken, saveGithubToken } from '@/lib/tokenStorage'
+import {
+  AlertCircle,
+  FolderGit2,
+  Clock,
+  Timer,
+  Eye,
+  MessageSquare,
+  GitMerge,
+  AlertOctagon,
+} from 'lucide-react'
 
 const defaultFilters: DashboardFiltersState = {
   days: null,
   author: 'all',
   state: 'ALL',
+}
+
+function repoLabelFromUrl(url: string) {
+  try {
+    const path = url.replace(/\.git$/, '').split('github.com/')[1]
+    if (path) return path.replace(/\/$/, '')
+  } catch {
+    /* ignore */
+  }
+  return 'Repository'
 }
 
 export default function Home() {
@@ -47,6 +69,16 @@ export default function Home() {
   const [data, setData] = useState<any>(null)
   const [authors, setAuthors] = useState<string[]>([])
   const [filters, setFilters] = useState<DashboardFiltersState>(defaultFilters)
+  const [activeSection, setActiveSection] = useState<NavSection>('analyze')
+
+  useEffect(() => {
+    setGithubToken(loadGithubToken())
+  }, [])
+
+  const handleGithubTokenChange = (value: string) => {
+    setGithubToken(value)
+    saveGithubToken(value)
+  }
 
   const loadDashboardData = useCallback(
     async (id: number, activeFilters: DashboardFiltersState = defaultFilters) => {
@@ -90,6 +122,7 @@ export default function Home() {
           prRisk,
           staleAlerts,
         })
+        setActiveSection('overview')
       } catch (err: unknown) {
         setError(formatApiError(err) || 'Failed to load dashboard data')
       }
@@ -134,51 +167,63 @@ export default function Home() {
     data?.kpi?.avg_review_duration
   )
 
+  const hasData = Boolean(data && repoId)
+
   return (
-    <div className="min-h-screen bg-dark-900">
-      <motion.header
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="bg-dark-800 border-b border-dark-700 sticky top-0 z-50"
-      >
-        <div className="max-w-7xl mx-auto px-6 py-6 flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-3">
-              <Zap className="w-8 h-8 text-purple-400" />
-              <h1 className="text-3xl font-bold gradient-text">PR Intelligence Dashboard</h1>
+    <AppShell
+      hasData={hasData}
+      repoLabel={hasData ? repoLabelFromUrl(repoUrl) : undefined}
+      activeSection={activeSection}
+      onNavigate={setActiveSection}
+      headerActions={repoId ? <ExportButton repoId={repoId} filters={filters} /> : undefined}
+    >
+      <section id="section-analyze" className={hasData ? 'scroll-mt-8 mb-8' : ''}>
+        {hasData ? (
+          <RepositoryInput
+            githubToken={githubToken}
+            onGithubTokenChange={handleGithubTokenChange}
+            onAnalyze={handleAnalyze}
+            isLoading={isLoading}
+          />
+        ) : (
+          <div className="landing-glow-wrap">
+            <div className="landing-glow-box">
+              <RepositoryInput
+                variant="hero"
+                githubToken={githubToken}
+                onGithubTokenChange={handleGithubTokenChange}
+                onAnalyze={handleAnalyze}
+                isLoading={isLoading}
+              />
             </div>
-            <p className="text-gray-400 mt-2">Analyze GitHub repository health and PR metrics</p>
           </div>
-          {repoId && (
-            <ExportButton repoId={repoId} filters={filters} />
-          )}
-        </div>
-      </motion.header>
-
-      <main className="max-w-7xl mx-auto px-6 py-8">
-        <RepositoryInput
-          githubToken={githubToken}
-          onGithubTokenChange={setGithubToken}
-          onAnalyze={handleAnalyze}
-          isLoading={isLoading}
-        />
-
-        {error && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="card bg-red-900/20 border-red-700 mb-8 flex items-start gap-3"
-          >
-            <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
-            <div>
-              <h3 className="font-semibold text-red-400">Error</h3>
-              <p className="text-red-300 text-sm">{error}</p>
-            </div>
-          </motion.div>
         )}
+      </section>
 
-        {data && repoId && (
-          <>
+      {error && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className={`flex items-start gap-3 rounded-2xl border border-palette-rose/30 bg-palette-rose-light p-4 ${hasData ? 'mb-8' : 'mt-4'}`}
+        >
+          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-palette-rose" />
+          <div>
+            <h3 className="font-semibold text-palette-rose">Analysis error</h3>
+            <p className="mt-1 text-sm text-midnight-200">{error}</p>
+          </div>
+        </motion.div>
+      )}
+
+      {hasData && (
+        <>
+          <div className="mb-8">
+            <h2 className="page-heading">Manage your pull requests</h2>
+            <p className="page-subheading">
+              Track cycle time, merge health, and contributor activity for your repository.
+            </p>
+          </div>
+
+          <section id="section-overview" className="scroll-mt-8 mb-10">
             <DashboardFilters
               authors={authors}
               filters={filters}
@@ -186,46 +231,107 @@ export default function Home() {
               onApply={handleApplyFilters}
             />
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-              <KPICard title="Open PRs" value={data.kpi.open_prs} icon="📂" unit="currently open" />
-              <KPICard title="Stale Open (>30D)" value={data.kpi.stale_prs} icon="⏳" unit="need attention" />
-              <KPICard title="Avg Cycle Time" value={cycleAvg.value} icon="⏱️" unit={cycleAvg.unit} />
-              <KPICard title="Median Cycle Time" value={cycleMedian.value} icon="📊" unit={cycleMedian.unit} />
-              <KPICard title="Avg Wait for Review" value={waitReview.value} icon="⏳" unit={waitReview.unit} />
-              <KPICard title="Avg Review Duration" value={reviewDuration.value} icon="👁️" unit={reviewDuration.unit} />
-              <KPICard title="Merge Rate" value={data.kpi.merge_rate} icon="✅" unit="%" />
-              <KPICard title="Avg Reviews / PR" value={data.kpi.avg_reviews_per_pr} icon="💬" unit="" />
+            <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-12">
+              <div className="lg:col-span-9">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <KPICard
+                    title="Open PRs"
+                    value={data.kpi.open_prs}
+                    icon={<FolderGit2 className="h-5 w-5" />}
+                    unit="open"
+                    accent="emerald"
+                  />
+                  <KPICard
+                    title="Stale (>30d)"
+                    value={data.kpi.stale_prs}
+                    icon={<AlertOctagon className="h-5 w-5" />}
+                    unit="attention"
+                    accent="amber"
+                  />
+                  <KPICard
+                    title="Avg cycle"
+                    value={cycleAvg.value}
+                    icon={<Clock className="h-5 w-5" />}
+                    unit={cycleAvg.unit}
+                    accent="orange"
+                  />
+                  <KPICard
+                    title="Median cycle"
+                    value={cycleMedian.value}
+                    icon={<Timer className="h-5 w-5" />}
+                    unit={cycleMedian.unit}
+                    accent="lime"
+                  />
+                  <KPICard
+                    title="Wait for review"
+                    value={waitReview.value}
+                    icon={<Eye className="h-5 w-5" />}
+                    unit={waitReview.unit}
+                    accent="rose"
+                  />
+                  <KPICard
+                    title="Review duration"
+                    value={reviewDuration.value}
+                    icon={<Eye className="h-5 w-5" />}
+                    unit={reviewDuration.unit}
+                    accent="teal"
+                  />
+                  <KPICard
+                    title="Merge rate"
+                    value={data.kpi.merge_rate}
+                    icon={<GitMerge className="h-5 w-5" />}
+                    unit="%"
+                    accent="teal"
+                  />
+                  <KPICard
+                    title="Reviews / PR"
+                    value={data.kpi.avg_reviews_per_pr}
+                    icon={<MessageSquare className="h-5 w-5" />}
+                    unit="avg"
+                    accent="orange"
+                  />
+                </div>
+              </div>
+              <div className="lg:col-span-3">
+                <MergeRateDonut
+                  mergeRate={data.kpi.merge_rate}
+                  openPrs={data.kpi.open_prs}
+                  stalePrs={data.kpi.stale_prs}
+                />
+              </div>
             </div>
+          </section>
 
-            <StalePRAlerts data={data.staleAlerts} />
-            <PRRiskPanel data={data.prRisk} />
+          <section id="section-insights" className="scroll-mt-8 mb-10 space-y-6">
+            <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+              <StalePRAlerts data={data.staleAlerts} />
+              <PRRiskPanel data={data.prRisk} />
+            </div>
+          </section>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+          <section id="section-charts" className="scroll-mt-8 mb-10 space-y-6">
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <MonthlyFlowChart data={data.monthlyFlow} />
               <ThroughputChart data={data.throughput} />
             </div>
+            <ContributorChart data={data.contributors} />
+            <ReviewTurnaroundChart data={data.reviewTurnaround} />
+          </section>
 
-            <div className="mb-8">
-              <ContributorChart data={data.contributors} />
-            </div>
-
-            <div className="mb-8">
-              <ReviewTurnaroundChart data={data.reviewTurnaround} />
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+          <section id="section-tables" className="scroll-mt-8 mb-10 space-y-6">
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <DataTable
-                title="Oldest Open PRs"
+                title="Oldest open PRs"
                 columns={[
                   { key: 'number', label: '#' },
                   { key: 'title', label: 'Title' },
-                  { key: 'age_days', label: 'Age (days)' },
+                  { key: 'age_days', label: 'Age' },
                   { key: 'author', label: 'Author' },
                   {
                     key: 'created_at',
                     label: 'Created',
                     render: (value: string) => {
-                      if (!value) return '-'
+                      if (!value) return '—'
                       return new Date(value).toLocaleDateString('en-US', {
                         month: 'short',
                         day: 'numeric',
@@ -237,18 +343,18 @@ export default function Home() {
                 data={data.oldest}
               />
               <DataTable
-                title="Slowest Merged PRs"
+                title="Slowest merged PRs"
                 columns={[
                   { key: 'number', label: '#' },
                   { key: 'title', label: 'Title' },
                   {
                     key: 'cycle_time_display',
-                    label: 'Cycle Time',
+                    label: 'Cycle',
                     render: (_: unknown, row?: any) => {
                       const d = row?.cycle_time_display
                       if (d) return `${d.value} ${d.unit}`
-                      return formatDurationFromDays(row?.cycle_time_days || 0).value + ' ' +
-                        formatDurationFromDays(row?.cycle_time_days || 0).unit
+                      const f = formatDurationFromDays(row?.cycle_time_days || 0)
+                      return `${f.value} ${f.unit}`
                     },
                   },
                   { key: 'author', label: 'Author' },
@@ -256,7 +362,7 @@ export default function Home() {
                     key: 'merged_at',
                     label: 'Merged',
                     render: (value: string) => {
-                      if (!value) return '-'
+                      if (!value) return '—'
                       return new Date(value).toLocaleDateString('en-US', {
                         month: 'short',
                         day: 'numeric',
@@ -268,31 +374,32 @@ export default function Home() {
                 data={data.slowest}
               />
             </div>
-
             <DataTable
-              title="Contributor Activity"
+              title="Contributor activity"
               columns={[
-                { key: 'username', label: 'Username' },
-                { key: 'total_prs', label: 'Total PRs' },
+                { key: 'username', label: 'User' },
+                { key: 'total_prs', label: 'PRs' },
                 { key: 'merged_prs', label: 'Merged' },
                 {
                   key: 'avg_cycle_time_display',
-                  label: 'Avg Cycle Time',
+                  label: 'Avg cycle',
                   render: (_: unknown, row?: any) => {
                     const d = row?.avg_cycle_time_display
                     if (d) return `${d.value} ${d.unit}`
-                    return `${row?.avg_cycle_time || 0} days`
+                    return `${row?.avg_cycle_time || 0}d`
                   },
                 },
-                { key: 'merge_rate', label: 'Merge Rate (%)' },
+                { key: 'merge_rate', label: 'Merge %' },
               ]}
               data={data.contributors}
             />
+          </section>
 
+          <section id="section-compare" className="scroll-mt-8">
             <CompareRepos defaultUrl={repoUrl} githubToken={githubToken} />
-          </>
-        )}
-      </main>
-    </div>
+          </section>
+        </>
+      )}
+    </AppShell>
   )
 }

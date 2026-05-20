@@ -66,7 +66,16 @@ class DataProcessor:
                 print(f"[2/6] Using existing repository record: {repo.id}")
             
             # Fetch PR data from GitHub (user token overrides env for this run)
-            client = GitHubClient(token=github_token.strip() if github_token else None)
+            token = (github_token or "").strip() or None
+            client = GitHubClient(token=token)
+            if not client.token:
+                print("[WARN] No GitHub token — only public repositories can be analyzed")
+            else:
+                print(f"[3/6] Using GitHub token (user={'yes' if token else 'env'})")
+            print(f"[3/6] Verifying repository access...")
+            repo_meta = client.verify_repository_access(owner, repo_name)
+            is_private = repo_meta.get("isPrivate", False)
+            print(f"[3/6] Repository access OK (private={is_private})")
             print(f"[3/6] Fetching PRs from GitHub...")
             raw_prs = client.fetch_pull_requests(owner, repo_name, first=50)
             print(f"[3/6] Fetched {len(raw_prs)} PRs from GitHub")
@@ -165,7 +174,9 @@ class DataProcessor:
                 "owner": owner,
                 "repo": repo_name,
                 "prs_processed": pr_count,
-                "repo_id": repo.id
+                "repo_id": repo.id,
+                "is_private": is_private,
+                "used_token": bool(client.token),
             }
         except Exception as e:
             print(f"[FATAL ERROR] {str(e)}")

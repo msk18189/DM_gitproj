@@ -5,32 +5,51 @@ import {
   Line,
   BarChart,
   Bar,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
   Legend,
   ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
 } from 'recharts'
 import { motion } from 'framer-motion'
-
-interface ChartProps {
-  title: string
-  data: any[]
-  type: 'line' | 'bar' | 'pie'
-}
-
-const COLORS = ['#667eea', '#764ba2', '#f093fb', '#4facfe', '#00f2fe']
+import { CHART, tooltipStyle, legendStyle } from '@/lib/chartTheme'
+import { PALETTE } from '@/lib/theme'
 
 function EmptyChart({ title, message }: { title: string; message: string }) {
   return (
-    <div className="card card-hover flex flex-col items-center justify-center h-[300px] text-gray-400">
-      <p className="font-semibold text-gray-300 mb-1">{title}</p>
+    <motion.div className="card card-hover flex h-[320px] flex-col items-center justify-center text-midnight-400">
+      <p className="section-title mb-1">{title}</p>
       <p className="text-sm">{message}</p>
-    </div>
+    </motion.div>
+  )
+}
+
+function ChartShell({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="card card-hover card-glow h-full">
+      <h3 className="section-title">{title}</h3>
+      {subtitle && <p className="section-subtitle mb-4">{subtitle}</p>}
+      {!subtitle && <div className="mb-4" />}
+      {children}
+    </motion.div>
+  )
+}
+
+const renderColorLegend = (value: string) => {
+  const colors: Record<string, string> = {
+    Created: CHART.created,
+    Merged: CHART.merged,
+    'Closed (unmerged)': CHART.closed,
+    Closed: CHART.closed,
+    'Merged PRs': CHART.line,
+    'Total PRs': CHART.total,
+  }
+  const color = colors[value] || PALETTE.emerald.main
+  return (
+    <span style={{ color, fontWeight: 600, fontSize: 12 }}>{value}</span>
   )
 }
 
@@ -47,34 +66,20 @@ export function MonthlyFlowChart({ data }: { data: any[] }) {
   }
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="card card-hover"
-    >
-      <h3 className="text-lg font-bold mb-4">Monthly PR Flow</h3>
-      <p className="text-xs text-gray-400 mb-3">
-        Created, merged, and closed counts by month (when each event happened)
-      </p>
+    <ChartShell title="Monthly PR Flow" subtitle="Created · Merged · Closed — each in a distinct color">
       <ResponsiveContainer width="100%" height={300}>
         <BarChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-          <XAxis dataKey="month" stroke="#9ca3af" tick={{ fontSize: 12 }} />
-          <YAxis stroke="#9ca3af" allowDecimals={false} />
-          <Tooltip
-            contentStyle={{
-              backgroundColor: '#1f2937',
-              border: '1px solid #374151',
-              borderRadius: '8px',
-            }}
-          />
-          <Legend />
-          <Bar dataKey="created" name="Created" fill="#667eea" radius={[4, 4, 0, 0]} />
-          <Bar dataKey="merged" name="Merged" fill="#10b981" radius={[4, 4, 0, 0]} />
-          <Bar dataKey="closed" name="Closed (unmerged)" fill="#ef4444" radius={[4, 4, 0, 0]} />
+          <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} vertical={false} />
+          <XAxis dataKey="month" stroke={CHART.axis} tick={{ fontSize: 11, fill: CHART.axis }} axisLine={false} tickLine={false} />
+          <YAxis stroke={CHART.axis} allowDecimals={false} tick={{ fill: CHART.axis }} axisLine={false} tickLine={false} />
+          <Tooltip contentStyle={tooltipStyle} />
+          <Legend wrapperStyle={legendStyle} formatter={renderColorLegend} />
+          <Bar dataKey="created" name="Created" fill={CHART.created} radius={[6, 6, 0, 0]} />
+          <Bar dataKey="merged" name="Merged" fill={CHART.merged} radius={[6, 6, 0, 0]} />
+          <Bar dataKey="closed" name="Closed (unmerged)" fill={CHART.closed} radius={[6, 6, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
-    </motion.div>
+    </ChartShell>
   )
 }
 
@@ -86,47 +91,37 @@ export function ThroughputChart({ data }: { data: any[] | Record<string, number>
         .sort((a, b) => a.week.localeCompare(b.week))
 
   if (!chartData.length) {
-    return (
-      <EmptyChart
-        title="PR Throughput (Weekly)"
-        message="No merged PRs in the last 8 weeks."
-      />
-    )
+    return <EmptyChart title="PR Throughput" message="No merged PRs in the last 8 weeks." />
   }
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="card card-hover"
-    >
-      <h3 className="text-lg font-bold mb-4">PR Throughput (Weekly)</h3>
-      <p className="text-xs text-gray-400 mb-3">Merged PRs per week (ISO week, Mon–Sun)</p>
+    <ChartShell title="PR Throughput" subtitle={`Weekly merges — ${PALETTE.orange.main} trend`}>
       <ResponsiveContainer width="100%" height={300}>
-        <LineChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-          <XAxis dataKey="week" stroke="#9ca3af" tick={{ fontSize: 11 }} />
-          <YAxis stroke="#9ca3af" allowDecimals={false} />
-          <Tooltip
-            contentStyle={{
-              backgroundColor: '#1f2937',
-              border: '1px solid #374151',
-              borderRadius: '8px',
-            }}
-            formatter={(value: number) => [`${value} PRs`, 'Merged']}
-          />
-          <Line
+        <AreaChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
+          <defs>
+            <linearGradient id="throughputGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={CHART.line} stopOpacity={0.45} />
+              <stop offset="100%" stopColor={CHART.line} stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} vertical={false} />
+          <XAxis dataKey="week" stroke={CHART.axis} tick={{ fontSize: 10, fill: CHART.axis }} axisLine={false} tickLine={false} />
+          <YAxis stroke={CHART.axis} allowDecimals={false} tick={{ fill: CHART.axis }} axisLine={false} tickLine={false} />
+          <Tooltip contentStyle={tooltipStyle} formatter={(value: number) => [`${value} PRs`, 'Merged']} />
+          <Legend wrapperStyle={legendStyle} formatter={renderColorLegend} />
+          <Area
             type="monotone"
             dataKey="prs"
             name="Merged PRs"
-            stroke="#667eea"
-            strokeWidth={2}
-            dot={{ fill: '#667eea', r: 4 }}
-            activeDot={{ r: 6 }}
+            stroke={CHART.line}
+            strokeWidth={2.5}
+            fill="url(#throughputGrad)"
+            dot={{ fill: CHART.line, r: 4, strokeWidth: 0 }}
+            activeDot={{ r: 6, fill: '#fff', stroke: CHART.line, strokeWidth: 2 }}
           />
-        </LineChart>
+        </AreaChart>
       </ResponsiveContainer>
-    </motion.div>
+    </ChartShell>
   )
 }
 
@@ -146,7 +141,7 @@ export function ContributorChart({ data }: { data: any[] }) {
     return (
       <EmptyChart
         title="Contributor Activity"
-        message="No contributor data yet. Re-analyze the repository to refresh."
+        message="No contributor data yet. Re-analyze the repository."
       />
     )
   }
@@ -154,89 +149,94 @@ export function ContributorChart({ data }: { data: any[] }) {
   const chartHeight = Math.max(300, chartData.length * 28 + 80)
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="card card-hover"
+    <ChartShell
+      title="Contributor Activity"
+      subtitle={`Total PRs (${PALETTE.lime.main}) vs merged (${PALETTE.teal.main})`}
     >
-      <h3 className="text-lg font-bold mb-4">Contributor Activity</h3>
-      <p className="text-xs text-gray-400 mb-3">
-        Top contributors by PRs opened vs merged (from fetched pull requests)
-      </p>
       <ResponsiveContainer width="100%" height={chartHeight}>
         <BarChart
           data={chartData}
           layout="vertical"
           margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
         >
-          <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
-          <XAxis type="number" stroke="#9ca3af" allowDecimals={false} />
+          <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} horizontal={false} />
+          <XAxis type="number" stroke={CHART.axis} allowDecimals={false} tick={{ fill: CHART.axis }} axisLine={false} tickLine={false} />
           <YAxis
             type="category"
             dataKey="label"
-            stroke="#9ca3af"
+            stroke={CHART.axis}
             width={100}
-            tick={{ fontSize: 11 }}
+            tick={{ fontSize: 11, fill: CHART.axis }}
+            axisLine={false}
+            tickLine={false}
           />
           <Tooltip
-            contentStyle={{
-              backgroundColor: '#1f2937',
-              border: '1px solid #374151',
-              borderRadius: '8px',
-            }}
-            labelFormatter={(_, payload) =>
-              payload?.[0]?.payload?.username || ''
-            }
+            contentStyle={tooltipStyle}
+            labelFormatter={(_, payload) => payload?.[0]?.payload?.username || ''}
             formatter={(value: number, name: string) => [`${value} PRs`, name]}
           />
-          <Legend />
-          <Bar dataKey="total_prs" fill="#667eea" name="Total PRs" radius={[0, 4, 4, 0]} />
-          <Bar dataKey="merged_prs" fill="#10b981" name="Merged" radius={[0, 4, 4, 0]} />
+          <Legend wrapperStyle={legendStyle} formatter={renderColorLegend} />
+          <Bar dataKey="total_prs" fill={CHART.total} name="Total PRs" radius={[0, 6, 6, 0]} />
+          <Bar dataKey="merged_prs" fill={CHART.mergedBar} name="Merged" radius={[0, 6, 6, 0]} />
         </BarChart>
       </ResponsiveContainer>
-    </motion.div>
+    </ChartShell>
   )
 }
 
 export function ReviewTurnaroundChart({ data }: { data: any[] }) {
+  const maxHours = Math.max(...(data || []).map((d) => d.avg_wait_hours || 0), 1)
+
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="card card-hover"
-    >
-      <h3 className="text-lg font-bold mb-4">Review Turnaround - Avg Wait for First Review</h3>
+    <ChartShell title="Review Turnaround" subtitle="Wait time bands — teal · amber · rose">
       <div className="space-y-3">
-        {data.map((item, idx) => (
-          <div key={idx} className="flex items-center gap-3">
-            <div className="w-32 text-sm font-medium text-gray-300">{item.username}</div>
-            <div className="flex-1 bg-dark-700 rounded h-6 relative overflow-hidden">
+        {(data || []).map((item, idx) => {
+          const pct = Math.min((item.avg_wait_hours / maxHours) * 100, 100)
+          const barStyle =
+            item.avg_wait_hours < 24
+              ? { background: `linear-gradient(90deg, ${PALETTE.teal.main}, ${PALETTE.teal.text})` }
+              : item.avg_wait_hours < 48
+                ? { background: `linear-gradient(90deg, ${PALETTE.amber.main}, ${PALETTE.amber.text})` }
+                : { background: `linear-gradient(90deg, ${PALETTE.rose.main}, ${PALETTE.rose.text})` }
+          return (
+            <div key={idx} className="flex items-center gap-3">
+              <div className="w-28 truncate text-sm font-medium text-palette-emerald-text">
+                {item.username}
+              </div>
+              <div className="relative h-2.5 flex-1 overflow-hidden rounded-full bg-midnight-800">
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{ width: `${pct}%`, ...barStyle }}
+                />
+              </div>
               <div
-                className={`h-full rounded flex items-center justify-end pr-2 text-xs font-bold text-white ${
+                className={`w-14 text-right text-xs font-bold ${
                   item.avg_wait_hours < 24
-                    ? 'bg-green-600'
+                    ? 'text-palette-teal'
                     : item.avg_wait_hours < 48
-                    ? 'bg-yellow-600'
-                    : 'bg-red-600'
+                      ? 'text-palette-amber'
+                      : 'text-palette-rose'
                 }`}
-                style={{ width: `${Math.min((item.avg_wait_hours / 100) * 100, 100)}%` }}
               >
-                {item.avg_wait_hours > 10 && `${item.avg_wait_hours.toFixed(1)}h`}
+                {item.avg_wait_hours < 24
+                  ? `${item.avg_wait_hours.toFixed(1)}h`
+                  : `${(item.avg_wait_hours / 24).toFixed(1)}d`}
               </div>
             </div>
-            <div className="w-16 text-right text-sm font-semibold text-gray-300">
-              {item.avg_wait_hours < 24
-                ? `${item.avg_wait_hours.toFixed(1)}h`
-                : `${(item.avg_wait_hours / 24).toFixed(1)}d`}
-            </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
-      <div className="mt-4 text-xs text-gray-400 flex gap-4">
-        <span>🟢 &lt;24h</span>
-        <span>🟡 24-48h</span>
-        <span>🔴 &gt;48h</span>
+      <div className="mt-5 flex flex-wrap gap-4 text-[11px] font-medium">
+        <span className="flex items-center gap-1.5 text-palette-teal">
+          <span className="h-2.5 w-2.5 rounded-full bg-palette-teal" /> &lt;24h
+        </span>
+        <span className="flex items-center gap-1.5 text-palette-amber">
+          <span className="h-2.5 w-2.5 rounded-full bg-palette-amber" /> 24–48h
+        </span>
+        <span className="flex items-center gap-1.5 text-palette-rose">
+          <span className="h-2.5 w-2.5 rounded-full bg-palette-rose" /> &gt;48h
+        </span>
       </div>
-    </motion.div>
+    </ChartShell>
   )
 }
